@@ -27,7 +27,9 @@ import {
   notPackableAssets,
   openScriptContext,
   parsePack,
+  printProblems,
   readInputFile,
+  reportSwept,
   sanitizeForTerminal,
   storedAssetName,
   stringifyJson,
@@ -159,11 +161,15 @@ function scanAssets(pack, schema) {
       ...present.filter((name) => !isStorableAssetName(name)).map((name) => describeAssetName(name)),
       ...rows.filter((row) => !isStorableAssetName(storedAssetName(row.file))).map((row) => describeAssetName(row.file)),
     ],
-    notPackable: notPackableAssets(present, schema.generatedFiles.assetsDir).map((entry) => ({
-      file: describeAssetName(entry.name),
-      reason: entry.code,
-      ...(entry.other === undefined ? {} : { other: describeAssetName(entry.other) }),
-    })),
+    notPackable: [
+      ...notPackableAssets(present, schema.generatedFiles.assetsDir).map((entry) => ({
+        file: describeAssetName(entry.name),
+        reason: entry.code,
+        ...(entry.other === undefined ? {} : { other: describeAssetName(entry.other) }),
+      })),
+      // Links and special files cannot go into a zip at all.
+      ...(pack.assets.notPlain ?? []).map((shown) => ({ file: shown, reason: 'notPlain' })),
+    ],
     missingFile: rows.filter((row) => !presentKeys.has(assetKey(row.file))).map((row) => row.file),
     noRights: rows.filter((row) => row.rights.trim() === '').map((row) => row.file),
     rightsUnknown: rows.filter((row) => isUnknownRights(row.rights)).map((row) => row.file),
@@ -208,6 +214,7 @@ function run(context, io) {
   const updates = collectUpdates(values, context, new Map(context.pack.assets.present.map((name) => [name.normalize('NFC'), name])));
   if (values.init) changes.created = ensureAssetsFolder(root, schema);
   let pack = context.pack;
+  let swept = [];
   if (removal !== null || updates.length > 0) {
     let rows = pack.assets.rows;
     if (removal !== null) {
@@ -217,16 +224,25 @@ function run(context, io) {
     const applied = applyUpdates(rows, updates);
     changes.added = applied.added;
     changes.updated = applied.updated;
-    writeAssetsTable(root, applied.rows, { schema, schemaDir: context.schemaDir, language: context.language, now: context.now, today: localDate(context.now) });
+    swept = writeAssetsTable(root, applied.rows, { schema, schemaDir: context.schemaDir, language: context.language, now: context.now, today: localDate(context.now) }).swept;
     pack = parsePack(root, schema);
   }
-  if (values.delete) fs.rmSync(path.resolve(context.cwd, values.from), { force: true });
   const scan = scanAssets(pack, schema);
   if (values.json) {
     io.stdout.write(`${stringifyJson({ ...scan, ...changes, rows: pack.assets.rows })}\n`);
   } else {
     const text = formatScan(scan, changes, pack, i18n).join('\n');
     io.stdout.write(`${sanitizeForTerminal(text, { keepLineBreaks: true })}\n`);
+  }
+  reportSwept(io.stderr, i18n, swept);
+  // The list is saved. A file that cannot be removed is a warning, not a failure.
+  if (values.delete) {
+    const rowsFile = path.resolve(context.cwd, values.from);
+    try {
+      fs.rmSync(rowsFile, { force: true });
+    } catch (error) {
+      printProblems(io.stderr, i18n, [{ key: 'ui.assets.warn.deleteFailed', params: { path: rowsFile, code: error && error.code ? String(error.code) : 'EIO' } }]);
+    }
   }
   return 0;
 }

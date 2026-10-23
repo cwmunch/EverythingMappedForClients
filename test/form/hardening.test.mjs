@@ -500,12 +500,12 @@ test('the texts do not promise what the page does not do', () => {
   // The privacy text: where answers live, what is kept by default, who can read them.
   assert.match(en['ui.form.privacy.text'], /only while the box below is ticked/);
   assert.match(en['ui.form.privacy.text'], /Opened from a file, the page starts with the box unticked/);
-  assert.match(en['ui.form.privacy.text'], /Opened from a web address, it starts ticked and saves your answers as you type/);
-  assert.match(en['ui.form.privacy.text'], /other pages on the same web address could read them/);
+  assert.match(en['ui.form.privacy.text'], /Opened from a web address, it starts ticked, unless you turned it off, and saves your answers as you type/);
+  assert.match(en['ui.form.privacy.text'], /every page on the same web site could read them/);
   assert.doesNotMatch(en['ui.form.privacy.text'], /only if you choose to keep them/);
   assert.match(da['ui.form.privacy.text'], /kun så længe feltet nedenfor er afkrydset/);
-  assert.match(da['ui.form.privacy.text'], /starter den med hak og gemmer dine svar, mens du skriver/);
-  assert.match(da['ui.form.privacy.text'], /andre sider på samme webadresse kan læse dem/);
+  assert.match(da['ui.form.privacy.text'], /starter den med hak, medmindre du har slået det fra, og gemmer dine svar, mens du skriver/);
+  assert.match(da['ui.form.privacy.text'], /alle sider på samme websted kan læse dem/);
   // Removing: another open window does not write the answers back.
   assert.match(en['ui.form.keep.removed'], /no other open window of this page saves them again/);
   assert.match(da['ui.form.keep.removed'], /ingen andre åbne vinduer/);

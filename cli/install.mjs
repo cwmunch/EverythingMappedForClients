@@ -4,21 +4,20 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { assertNoPositionals, parseArgs } from './args.mjs';
-import { copyTree, listTree } from './copy.mjs';
+import { listTree } from './copy.mjs';
 import { detectTools } from './detect.mjs';
 import { CliError } from './errors.mjs';
-import { say, sayLeftInPlace, sayStaleBackups } from './output.mjs';
+import { say, sayLeftInPlace, sayStaleFolders } from './output.mjs';
 import { askTargets } from './prompt.mjs';
 import { RECORD_NAME } from './record.mjs';
 import { resolveScopes } from './scope.mjs';
+import { installCopy } from './stage.mjs';
 import {
   TOOLS,
   assertParentsSafe,
   describeLeftovers,
   findBlocking,
-  findStaleBackups,
   inspectSkillFolder,
-  moveAside,
   planRemoval,
   skillFolderFor,
 } from './skill-folder.mjs';
@@ -73,10 +72,12 @@ function planInstall(targets, tools, force, tree) {
     for (const tool of tools) {
       assertParentsSafe(baseDir, tool);
       const folder = skillFolderFor(baseDir, tool);
-      const existing = inspectSkillFolder(folder);
+      let existing = inspectSkillFolder(folder);
+      // A folder with nothing in it (left by an install that was stopped) is free to install into.
+      if (existing === 'folder' && fs.readdirSync(folder).length === 0) existing = 'none';
       let removal = null;
       if (existing !== 'none') {
-        if (!force) throw new CliError('ui.install.error.exists', { path: folder });
+        if (!force) throw new CliError(hasRecord(folder) ? 'ui.install.error.exists' : 'ui.install.error.existsNoRecord', { path: folder });
         removal = planRemoval(folder);
         const blocking = findBlocking(removal, tree);
         if (blocking) throw new CliError(blocking.key, { path: path.join(folder, ...blocking.path.split('/')) });
@@ -85,6 +86,11 @@ function planInstall(targets, tools, force, tree) {
     }
   }
   return plans;
+}
+
+// True when the folder holds an install record (a copy this tool made, complete or not).
+function hasRecord(folder) {
+  return fs.lstatSync(path.join(folder, RECORD_NAME), { throwIfNoEntry: false })?.isFile() === true;
 }
 
 // The paths the install will write, in the order they are listed: the files, then the install record.
@@ -109,36 +115,26 @@ function printDryRun(plans, tree, io, t) {
   say(io, t('ui.install.dryRun.done'));
 }
 
-// Installs one scope and tool. When the copy fails after the old files were moved aside, they are put back.
-function installOne(plan, tree, io, t) {
+// Installs one scope and tool (see stage.mjs): the new copy is built beside the skills folder and moved in
+// whole, and the old one is put back if that fails. A backup that cannot be removed afterwards is only named.
+function installOne(plan, tree, io, t, hooks) {
   say(io);
   const where = { tool: toolName(plan.tool, t), count: tree.files.length + 1, path: plan.folder };
   say(io, t('ui.install.writing', where));
   for (const target of plannedPaths(plan, tree)) say(io, `  ${target}`);
 
   assertParentsSafe(plan.baseDir, plan.tool);
-  let aside = null;
   if (plan.removal) {
     say(io, t('ui.install.replacing', { path: plan.folder }));
     sayLeftInPlace(io, t, plan.folder, { ...describeLeftovers(plan.removal), folderRemoved: true });
-    aside = moveAside(plan.folder, plan.removal);
   }
-
   const written = [];
-  try {
-    copyTree(tree, plan.folder, (file) => written.push(file), {
-      baseDir: plan.baseDir,
-      inheritedAncestors: plan.removal?.record.ancestors ?? [],
-    });
-  } catch (error) {
-    aside?.restore();
-    throw error;
-  }
-  aside?.discard();
+  const { backupLeft } = installCopy(plan, tree, (file) => written.push(file), hooks);
 
   say(io, t('ui.install.hashes'));
   for (const file of written) say(io, `  ${file.sha256}  ${file.destinationPath}`);
   say(io, t('ui.install.done', { tool: toolName(plan.tool, t), count: written.length }));
+  if (backupLeft) say(io, t('ui.install.warn.backupLeft', { path: backupLeft }));
 }
 
 // One line per scope with its folder and the tools installed there.
@@ -174,7 +170,7 @@ export async function runInstall(argv, io, ctx, text) {
   const tree = readSource(ctx.sourceDir);
   // Named first, so the person sees them even when the install is refused.
   for (const { baseDir } of targets) {
-    for (const tool of tools) sayStaleBackups(io, t, findStaleBackups(baseDir, tool));
+    for (const tool of tools) sayStaleFolders(io, t, baseDir, tool);
   }
   const plans = planInstall(targets, tools, values.force === true, tree);
 
@@ -183,7 +179,7 @@ export async function runInstall(argv, io, ctx, text) {
     printDryRun(plans, tree, io, t);
     return 0;
   }
-  for (const plan of plans) installOne(plan, tree, io, t);
+  for (const plan of plans) installOne(plan, tree, io, t, ctx.hooks);
   printSummary(targets, plans, io, t);
   printNextSteps(targets, plans, io, t);
   return 0;

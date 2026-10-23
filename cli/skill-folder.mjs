@@ -264,18 +264,18 @@ export function applyRemoval(folder, plan, baseDir) {
   return { removed, ...describeLeftovers(plan), folderRemoved, removedFolders };
 }
 
-const BACKUP_PREFIX = `.${SKILL_NAME}-backup-`;
+export const BACKUP_PREFIX = `.${SKILL_NAME}-backup-`;
+export const STAGING_PREFIX = `.${SKILL_NAME}-staging-`;
 
-// Where a backup is kept: next to the skills folder (inside .claude or .agents), never inside it, so a
-// backup that is left behind holds a SKILL.md that no tool looks at as a skill. Same file system as the
-// skill folder, so moving files in and out is a rename.
-function backupParent(folder) {
+// Where a backup or a staging folder is kept: next to the skills folder (inside .claude or .agents),
+// never inside it, so one that is left behind holds a SKILL.md that no tool looks at as a skill. Same
+// file system as the skill folder, so moving files in and out, or the folder into place, is a rename.
+export function sideFolder(folder) {
   return path.dirname(path.dirname(folder));
 }
 
-// Backups left behind by an install that failed and could not put the old files back: the folders
-// named .everything-mapped-backup-* in the tool folder (and, from older versions, in its skills folder).
-export function findStaleBackups(baseDir, toolId) {
+// Folders named prefix* in the tool folder (and, from older versions, in its skills folder).
+function findFoldersWithPrefix(baseDir, toolId, prefix) {
   const toolFolder = path.join(baseDir, TOOLS[toolId].folder);
   const found = [];
   for (const parent of [toolFolder, path.join(toolFolder, 'skills')]) {
@@ -285,7 +285,7 @@ export function findStaleBackups(baseDir, toolId) {
     } catch {
       continue;
     }
-    for (const name of names.filter((entry) => entry.startsWith(BACKUP_PREFIX))) {
+    for (const name of names.filter((entry) => entry.startsWith(prefix))) {
       const absolute = path.join(parent, name);
       if (fs.lstatSync(absolute, { throwIfNoEntry: false })?.isDirectory()) found.push(absolute);
     }
@@ -293,14 +293,24 @@ export function findStaleBackups(baseDir, toolId) {
   return found.sort();
 }
 
+// Backups left behind: by a failed restore, or by a backup that could not be removed.
+export function findStaleBackups(baseDir, toolId) {
+  return findFoldersWithPrefix(baseDir, toolId, BACKUP_PREFIX);
+}
+
+// Staging folders left behind by an install that was stopped half way. Nothing in them is used.
+export function findStaleStaging(baseDir, toolId) {
+  return findFoldersWithPrefix(baseDir, toolId, STAGING_PREFIX);
+}
+
 // Moves the old installed files (and the record) into a backup folder (see backupParent), so that
 // a new copy can be written in their place and the old one can be put back if that fails.
 // Returns { restore(), discard() }: restore() puts everything back and removes the backup; discard()
-// removes the backup once the new copy is in place. If restore() cannot put everything back it throws
+// removes the backup once the new copy is in place (and throws if it cannot). path is the backup. If restore() cannot put everything back it throws
 // an error that names the backup, which is then left where it is.
 export function moveAside(folder, plan) {
   const realFolder = fs.realpathSync(folder);
-  const backup = fs.mkdtempSync(path.join(backupParent(folder), BACKUP_PREFIX));
+  const backup = fs.mkdtempSync(path.join(sideFolder(folder), BACKUP_PREFIX));
   const moved = [];
   const removedDirs = [];
 
@@ -340,5 +350,5 @@ export function moveAside(folder, plan) {
     restore();
     throw error;
   }
-  return { restore, discard: () => fs.rmSync(backup, { recursive: true, force: true }) };
+  return { path: backup, restore, discard: () => fs.rmSync(backup, { recursive: true, force: true }) };
 }

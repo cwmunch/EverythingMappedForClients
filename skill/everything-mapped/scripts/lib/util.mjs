@@ -147,6 +147,10 @@ export const MAX_BODY_CHARS = 200 * 1024;
 export const MAX_TEXT_FILE_BYTES = 2 * 1024 * 1024;
 export const MAX_JSON_FILE_BYTES = 20 * 1024 * 1024;
 export const MAX_ASSET_BYTES = 500 * 1024 * 1024;
+// What pack puts in a zip: at most this many entries (the files of the layout and the assets) and this
+// many bytes. pack.mjs uses the same numbers.
+export const MAX_PACK_FILES = 5000;
+export const MAX_PACK_BYTES = 500 * 1024 * 1024;
 export const MAX_ASSET_ROWS = 5000;
 export const MAX_ASSET_FILES = 50000;
 export const MAX_FLAGS_PER_KIND = 100;
@@ -295,6 +299,12 @@ export function isStorableAssetName(name) {
   return true;
 }
 
+// A size in whole megabytes, rounded up, for a message ("600 MB"). A size over a limit never reads
+// as the limit.
+export function formatMegabytes(bytes) {
+  return `${Math.ceil(Number(bytes) / (1024 * 1024))} MB`;
+}
+
 // A file name for a message: every character that a terminal could show as nothing or as
 // something else (control characters, hidden characters, joiners, direction marks, the soft hyphen,
 // line and paragraph separators) and a space at either end are written as <U+XXXX>. This is the one
@@ -418,9 +428,20 @@ function hasPackNameForbiddenCharacter(name) {
 }
 
 // Two names that differ only in case, or in how an accent is written, are one file on Windows and
-// macOS. This is the key that tells.
+// macOS. This is the key that tells. Every character goes to upper case first and then to lower
+// case, because Windows compares names by their upper-case form and some letters only meet that way
+// (the dotless i and i, the long s and s, a final and a medial sigma). A letter whose upper case is
+// more than one character (the German sharp s becomes SS) stays as it is, as in the Windows table,
+// so straße.png and strasse.png are two names.
 export function foldPackName(name) {
-  return String(name).normalize('NFC').toLowerCase();
+  const normalized = String(name).normalize('NFC');
+  if (PRINTABLE_ASCII.test(normalized)) return normalized.toLowerCase();
+  let key = '';
+  for (const char of normalized) {
+    const upper = char.toUpperCase();
+    key += (Array.from(upper).length === 1 ? upper : char).toLowerCase();
+  }
+  return key;
 }
 
 // The reasons for one part of a name (between two slashes), in the order the zip checks them.

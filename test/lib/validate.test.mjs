@@ -102,7 +102,8 @@ test('showIf: A.existing-site is skipped for a new site and then neither counted
   assert.equal(report.completeness.counts.skipped, 1);
   assert.equal(report.completeness.counts.complete, 96);
   assert.equal(report.completeness.overall, 1);
-  assert.deepEqual(report.questions['A.existing-site'].flags, []);
+  // The answer is kept in the file and reported with an info flag, so nobody loses it without knowing.
+  assert.deepEqual(report.questions['A.existing-site'].flags, [{ id: 'answer.notApplicable', severity: 'info', params: { controller: 'A.project-kind' } }]);
 });
 
 test('requiredIf minSelected: two languages make G.multilingual a Gate 1 question', () => {
@@ -471,11 +472,15 @@ test('together the fixture packs trigger every flag of FORMAT.md section 14', ()
   for (const name of ['pack-broken', 'pack-en-partial', 'pack-da-complete']) {
     for (const flag of fixtureReport(name).flags) seen.add(flag.id);
   }
-  // A file name that the zip refuses cannot be kept in a fixture folder (Windows could not check it
-  // out), so this flag is triggered with pack data in memory.
+  // A file name that the zip refuses, a file over the size limit and a folder with too many files cannot
+  // be kept in a fixture folder (Windows could not check them out), so these flags are triggered with
+  // pack data in memory.
   const data = makePackData([]);
-  data.assets = { rows: [], present: ['con.png'], invalid: [] };
+  data.assets = { rows: [], present: ['con.png'], invalid: [], notPlain: [], large: [{ name: 'huge.bin', size: 600 * 1024 * 1024 }], omitted: 2, fileLimit: 5, bytes: 600 * 1024 * 1024 };
   for (const flag of validatePackData(data, schema, { today: TODAY }).flags) seen.add(flag.id);
+  // An answer under a question that another answer switches off (a hand edit can do this).
+  const switched = makePackData([complete('A.project-kind', { choice: ['new-site'] }), complete('A.existing-site', { items: [{ text: 'https://old.example.com' }] })]);
+  for (const flag of validatePackData(switched, schema, { today: TODAY }).flags) seen.add(flag.id);
   assert.deepEqual([...seen].sort(), [...FLAG_IDS].sort());
 });
 

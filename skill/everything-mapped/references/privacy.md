@@ -25,6 +25,16 @@ Everything the kit writes stays in the person's folder (the working directory):
   apply, including how long conversation history is kept. The kit does not change that and adds no other recipient.
 - A web page is opened only when the person gave the link and said yes to you looking at it.
 - The zip leaves the folder only when the person sends it, to whom they choose.
+- If a run was interrupted (the computer was switched off, or the window was closed in the middle of saving), small
+  hidden temporary files with names ending in `.tmp` can remain in `docs/` or next to the zip. They can hold an older
+  version of an answer, also one the person later asked to have removed. They are not put in the zip. The kit removes
+  its own temporary files that are older than ten minutes the next time it saves or packs. If the person wants them
+  gone at once, tell them to delete those `.tmp` files themselves. When a person asks for an answer to be removed,
+  also check `docs/` for such files. A file over 500 MB is never opened, so it is listed without a checksum. The
+  notes and recipient in the state file are rewritten with `<U+XXXX>` in place of hidden characters the next time
+  anything is saved. An older `intake-pack-*.zip` made on another day
+  still holds what was in the folder then: if something has been removed since, tell the person to delete the old zip
+  file as well.
 
 ## What is not collected
 

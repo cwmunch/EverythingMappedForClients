@@ -1,6 +1,7 @@
 // Small output helpers shared by install and uninstall.
 
 import { sanitizeForTerminal } from '../skill/everything-mapped/scripts/lib/util.mjs';
+import { findStaleBackups, findStaleStaging } from './skill-folder.mjs';
 
 // One line of text. Paths and file names come from the person's disk, so a control character in
 // one of them (for example an escape sequence) is shown as a visible stand-in, never sent to the terminal.
@@ -17,7 +18,8 @@ export function sayLeftInPlace(io, t, folder, result) {
   for (const removed of result.removedFolders ?? []) say(io, t('ui.install.remove.removedEmpty', { path: removed }));
 }
 
-// Names a backup that an earlier failed install left behind. Nothing is deleted: the person decides.
-export function sayStaleBackups(io, t, backups) {
-  for (const backup of backups) say(io, t('ui.install.warn.staleBackup', { path: backup }));
+// Names the backups and staging folders that earlier runs left behind. Nothing is deleted: the person decides.
+export function sayStaleFolders(io, t, baseDir, toolId) {
+  for (const backup of findStaleBackups(baseDir, toolId)) say(io, t('ui.install.warn.staleBackup', { path: backup }));
+  for (const stage of findStaleStaging(baseDir, toolId)) say(io, t('ui.install.warn.staleStaging', { path: stage }));
 }

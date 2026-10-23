@@ -140,12 +140,18 @@ export function assertNotLinked(root, relativePath) {
 }
 
 // The hash of each listed file that exists. `contents` (a Map from path to text) holds files that
-// are not written yet; their hash is taken from the text. A file that cannot be read is a PackError.
-function hashFiles(root, relativePaths, contents) {
+// are not written yet; their hash is taken from the text. A file over MAX_ASSET_BYTES is not read: it
+// is listed with its size and the marker skipped: "tooLarge" and no hash (`large` is a Map from a path
+// to the size of such a file that is already known). A file that cannot be read is a PackError.
+function hashFiles(root, relativePaths, contents, large = new Map()) {
   const files = [];
   for (const relative of relativePaths) {
     if (contents && contents.has(relative)) {
       files.push({ path: relative, sha256: sha256(contents.get(relative)) });
+      continue;
+    }
+    if (large.has(relative)) {
+      files.push({ path: relative, size: large.get(relative), skipped: 'tooLarge' });
       continue;
     }
     const absolute = path.join(root, ...relative.split('/'));
@@ -157,7 +163,8 @@ function hashFiles(root, relativePaths, contents) {
     }
     if (!stat || !stat.isFile()) continue;
     if (stat.size > MAX_ASSET_BYTES) {
-      throw new PackError('ui.check.err.assetTooLarge', { path: relative, limit: `${MAX_ASSET_BYTES / (1024 * 1024)} MB` });
+      files.push({ path: relative, size: stat.size, skipped: 'tooLarge' });
+      continue;
     }
     try {
       files.push({ path: relative, sha256: sha256File(absolute) });
@@ -166,6 +173,12 @@ function hashFiles(root, relativePaths, contents) {
     }
   }
   return files;
+}
+
+// The assets that are over the size limit, by their path from the pack root.
+function largeAssets(pack, paths) {
+  const large = (pack.assets && pack.assets.large) ?? [];
+  return new Map(large.map((entry) => [`${paths.assetsDir}/${entry.name}`, entry.size]));
 }
 
 function stampOf(value) {
@@ -191,6 +204,6 @@ export function buildManifest(pack, report, meta = {}) {
     createdAt: stampOf(meta.createdAt ?? updatedAt),
     updatedAt,
     completeness: manifestCompleteness(report),
-    files: hashFiles(pack.root, listedFiles(pack), meta.contents),
+    files: hashFiles(pack.root, listedFiles(pack), meta.contents, largeAssets(pack, paths)),
   };
 }

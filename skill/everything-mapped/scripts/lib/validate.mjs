@@ -2,7 +2,7 @@
 // Works on plain data, so the static form can use it too. This file must stay pure.
 
 import { effectiveLevel, findQuestion, inDepth, parseBody, questionsInOrder, selectedChoices, textLength } from './rules.mjs';
-import { MAX_FLAGS_PER_KIND, describeAssetName, entryNameProblems, hasHiddenCharacters, isPlainObject, isStorableAssetName, isValidDate, joinLines, localDate, restoreSetextLines, uniq } from './util.mjs';
+import { MAX_ASSET_BYTES, MAX_ASSET_FILES, MAX_FLAGS_PER_KIND, MAX_PACK_BYTES, MAX_PACK_FILES, describeAssetName, entryNameProblems, formatMegabytes, hasHiddenCharacters, isPlainObject, isStorableAssetName, isValidDate, joinLines, localDate, restoreSetextLines, uniq } from './util.mjs';
 
 // The design inputs that must be answered before the design inputs count as sufficient.
 export const DESIGN_INPUT_IDS = ['E.like', 'E.dislike', 'E.feel'];
@@ -271,6 +271,17 @@ function assetProblems(assets, assetsDir) {
     if (entry.other !== undefined) params.other = describeAssetName(entry.other);
     flags.push(newFlag('assets.notPackable', 'warn', params));
   }
+  // Links and special files are not part of a zip; their names are already written for display.
+  for (const shown of ((assets && assets.notPlain) ?? []).slice(0, MAX_FLAGS_PER_KIND)) {
+    flags.push(newFlag('assets.notPackable', 'warn', { file: shown, reasonCode: 'notPlain' }));
+  }
+  // Files over the size of the zip are left unread; files over the number that is listed are left out.
+  for (const entry of ((assets && assets.large) ?? []).slice(0, MAX_FLAGS_PER_KIND)) {
+    flags.push(newFlag('assets.tooLarge', 'warn', { file: describeAssetName(entry.name), size: formatMegabytes(entry.size), limit: formatMegabytes(MAX_ASSET_BYTES), bytes: entry.size }));
+  }
+  if (assets && assets.omitted > 0) {
+    flags.push(newFlag('assets.tooMany', 'warn', { count: assets.omitted, limit: assets.fileLimit ?? MAX_ASSET_FILES }));
+  }
   const nameParams = (row) => ({ file: describeAssetName(row.file) });
   addRowFlags(flags, rows, 'assets.badName', (row) => !isStorableAssetName(storedAssetName(row.file)), nameParams);
   addRowFlags(flags, rows, 'assets.missingFile', (row) => !presentKeys.has(assetKey(row.file)));
@@ -297,6 +308,27 @@ function storedTextProblems(packData, schema) {
     if (people.some((person) => isPlainObject(person) && (hidden(person.name) || hidden(person.role)))) flag(`${manifestFile} (respondents)`);
   }
   return flags;
+}
+
+// pack puts the files of the layout and every asset in the zip, and stops at MAX_PACK_FILES entries or
+// MAX_PACK_BYTES bytes. The layout is the answer files, the open-questions file, the table, the
+// manifest and the state; they are counted as there, whether they exist yet or not.
+function packSizeProblems(packData, schema) {
+  const assets = packData.assets ?? {};
+  const layout = schema.files.length + 4;
+  const entries = layout + ((assets.present ?? []).length + (assets.omitted ?? 0));
+  const bytes = assets.bytes ?? 0;
+  if (entries <= MAX_PACK_FILES && bytes <= MAX_PACK_BYTES) return [];
+  return [
+    newFlag('pack.tooBig', 'warn', {
+      entries,
+      maxEntries: MAX_PACK_FILES,
+      size: formatMegabytes(bytes),
+      maxSize: formatMegabytes(MAX_PACK_BYTES),
+      bytes,
+      maxBytes: MAX_PACK_BYTES,
+    }),
+  ];
 }
 
 function crossProblems(packData, schema, answers, statuses) {
@@ -394,6 +426,9 @@ export function validatePackData(packData, schema, opts = {}) {
     const declared = entry ? entry.status : 'missing';
     let record = { status: 'skipped', declared, owner: '', due: '', note: '', problems: [] };
     if (level !== 'skipped') record = judgeAnswer(question, entry, level, today);
+    else if (entry && declared !== 'missing' && question.showIf) {
+      record.problems = [{ id: 'answer.notApplicable', severity: 'info', params: { controller: question.showIf.id } }];
+    }
     const where = { qid: question.id, file: question.file };
     const questionFlags = record.problems.map((problem) => newFlag(problem.id, problem.severity, problem.params, where));
     for (const flag of questionFlags) flags.push(flag);
@@ -417,6 +452,7 @@ export function validatePackData(packData, schema, opts = {}) {
   }
   for (const flag of assetProblems(packData.assets, (schema.generatedFiles && schema.generatedFiles.assetsDir) || 'docs/assets')) flags.push(flag);
   for (const flag of storedTextProblems(packData, schema)) flags.push(flag);
+  for (const flag of packSizeProblems(packData, schema)) flags.push(flag);
   for (const flag of crossProblems(packData, schema, answers, statuses)) flags.push(flag);
 
   const blocking = Object.entries(questions)
@@ -489,17 +525,18 @@ function withReportFields(question, report) {
 
 // Questions to ask next. Only `missing` questions in scope of the depth are returned, in module
 // order with gate1 questions first inside a module, and a round never crosses a module boundary:
-// every question comes from the first module that has any left. A non-empty state.focus returns
-// exactly the focus ids that apply (known and not skipped), whatever their status, in focus order.
+// every question comes from the first module that has any left. A state.focus that holds ids that
+// apply (known and not switched off) returns exactly those ids, whatever their status, in focus order;
+// when none of its ids applies, the normal order is used.
 // opts: { count, module, depth }.
 export function nextQuestions(pack, schema, report, opts = {}) {
   const depth = opts.depth ?? report.depth;
   const focus = pack.state && Array.isArray(pack.state.focus) ? uniq(pack.state.focus) : [];
+  // A focus question that is unknown or switched off does not apply; when none applies, the normal order is used.
+  const applicable = focus.filter((id) => typeof id === 'string' && Object.hasOwn(report.questions, id) && report.questions[id].level !== 'skipped');
   let selected;
-  if (focus.length > 0) {
-    selected = focus
-      .filter((id) => typeof id === 'string' && Object.hasOwn(report.questions, id) && report.questions[id].level !== 'skipped')
-      .map((id) => findQuestion(schema, id));
+  if (applicable.length > 0) {
+    selected = applicable.map((id) => findQuestion(schema, id));
   } else {
     const rank = (question) => schema.moduleOrder.indexOf(question.module) * 2 + (report.questions[question.id].level === 'gate1' ? 0 : 1);
     const ordered = openQuestions(report, schema, depth)

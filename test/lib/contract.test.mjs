@@ -296,22 +296,23 @@ test('the broken fixture has an information flag for pasted text and a warning f
 
 // ---- check --write --lang with only docs/assets --------------------------------------------------------
 
-test('check --write --lang en on a folder that has only docs/assets writes English files', async (t) => {
+test('check --write --lang en on a folder that has only docs/assets writes nothing: the language is not taken from the console', async (t) => {
   const { cwd, run } = setup(t);
   writeText(cwd, 'docs/assets/logo.svg', '<svg/>');
   const result = await run(check, ['--write', '--lang', 'en']);
   assert.equal(result.code, 0, result.err);
-  assert.ok(result.out.includes('Wrote: docs/intake-manifest.json'));
-  assert.ok(fs.readFileSync(path.join(cwd, 'docs/07-risks-and-open-questions.md'), 'utf8').includes('# Risks and open questions'));
-  assert.equal(readJson(path.join(cwd, 'docs/intake-manifest.json')).language, 'en');
+  assert.ok(result.err.includes('No answer has set the language of this pack yet, so nothing was written.'));
+  assert.equal(fs.existsSync(path.join(cwd, 'docs/intake-manifest.json')), false);
+  assert.equal(fs.existsSync(path.join(cwd, 'docs/07-risks-and-open-questions.md')), false);
 });
 
-test('check --write on a folder with only docs/assets uses the language of the environment without --lang', async (t) => {
+test('check --write on a folder with only docs/assets does not use the language of the environment either', async (t) => {
   const { cwd, run } = setup(t);
   writeText(cwd, 'docs/assets/logo.svg', '<svg/>');
   const result = await run(check, ['--write'], { env: { LANG: 'da_DK.UTF-8' } });
   assert.equal(result.code, 0, result.err);
-  assert.equal(readJson(path.join(cwd, 'docs/intake-manifest.json')).language, 'da');
+  assert.ok(result.err.includes('Ingen svar har endnu fastsat sprog for denne pakke'));
+  assert.equal(fs.existsSync(path.join(cwd, 'docs/intake-manifest.json')), false);
 });
 
 test('refreshPack takes the language from its options when the pack has none', (t) => {

@@ -115,13 +115,13 @@ test('the privacy notice says where the data lives: in the page, in this browser
   assert.match(english, /only while the box below is ticked/);
   assert.match(english, /without the contents of attached files/);
   assert.match(english, /Opened from a file, the page starts with the box unticked/);
-  assert.match(english, /Opened from a web address, it starts ticked and saves your answers as you type, and other pages on the same web address could read them/);
+  assert.match(english, /Opened from a web address, it starts ticked, unless you turned it off, and saves your answers as you type, and every page on the same web site could read them/);
   assert.match(english, /The pack and the form data you save are files on your computer/);
   const danish = da['ui.form.privacy.text'];
   assert.match(danish, /kun så længe feltet nedenfor er afkrydset/);
   assert.match(danish, /uden indholdet af vedhæftede filer/);
   assert.match(danish, /Åbnes siden fra en fil, starter den uden hak/);
-  assert.match(danish, /Åbnes den fra en webadresse, starter den med hak og gemmer dine svar, mens du skriver, og andre sider på samme webadresse kan læse dem/);
+  assert.match(danish, /Åbnes den fra en webadresse, starter den med hak, medmindre du har slået det fra, og gemmer dine svar, mens du skriver, og alle sider på samme websted kan læse dem/);
   assert.match(danish, /Pakken og de formulardata, du gemmer, er filer på din computer/);
   assert.equal(en['ui.form.keep.labelFile'], 'Keep my answers in this browser. Other pages opened from this computer could read and change them.');
   assert.ok(da['ui.form.keep.labelFile'].includes('Andre sider, der åbnes fra denne computer, kan læse og ændre dem'));

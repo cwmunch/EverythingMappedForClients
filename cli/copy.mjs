@@ -1,13 +1,11 @@
 // Copies the skill folder. The source is walked first and any link or special file
 // stops the whole install, so nothing outside the source tree can ever be read.
-// Everything the copy creates is remembered, so a failed copy can be undone without
-// touching anything that was already there.
 
 import fs from 'node:fs';
 import path from 'node:path';
 import { CliError } from './errors.mjs';
 import { sha256File, sha256Hex } from './hash.mjs';
-import { RECORD_NAME, buildRecord, toSlashes } from './record.mjs';
+import { RECORD_NAME, buildRecord } from './record.mjs';
 
 function compareNames(a, b) {
   return Buffer.compare(Buffer.from(a), Buffer.from(b));
@@ -60,112 +58,41 @@ function fileMode(sourcePath) {
   return (fs.statSync(sourcePath).mode & 0o111) !== 0 ? 0o755 : 0o644;
 }
 
-// Creates the missing folders above the destination, and remembers which ones it created.
-// Folders that already exist there were checked by assertParentsSafe.
-function makeAncestors(folder, created) {
-  if (fs.lstatSync(folder, { throwIfNoEntry: false })) return;
-  makeAncestors(path.dirname(folder), created);
-  fs.mkdirSync(folder);
-  created.dirs.push(folder);
-}
-
-// Creates one folder at or below the destination. Whatever already exists there must be a real
-// folder: a link or a file is never written through, because a link can lead anywhere.
-function makeFolderBelow(folder, created) {
-  const stat = fs.lstatSync(folder, { throwIfNoEntry: false });
-  if (stat) {
-    if (stat.isDirectory()) return;
-    throw new CliError('ui.install.error.notRealFolder', { path: folder });
-  }
-  fs.mkdirSync(folder);
-  created.dirs.push(folder);
-}
-
-// Removes what this copy created: its files, then its folders if they are empty again.
-// Returns the first file that could not be removed, or null.
-function undoCreated(created) {
-  let stuck = null;
-  for (const file of created.files) {
-    try {
-      fs.unlinkSync(file);
-    } catch (error) {
-      if (error.code !== 'ENOENT') stuck ??= file;
-    }
-  }
-  for (const folder of [...created.dirs].reverse()) {
-    try {
-      fs.rmdirSync(folder);
-    } catch {
-      // not empty (it holds someone else's files) or already gone: leave it
-    }
-  }
-  return stuck;
-}
-
-function copyFiles(tree, destination, created, onFile) {
-  const written = [];
+// Fills a staging folder (new, empty, made by createStaging) with the files of the tree and the install
+// record. Nothing is ever written into the skill folder itself: the finished staging folder is moved
+// into place in one step by placeStaging. onFile({ relative, destinationPath, sha256 }) is called for
+// each file and for the record, with the path the file will have once installed (finalFolder).
+// Every file is read back and compared with its source before it counts as copied.
+// options: { ancestors, hooks } - ancestors are the folders above the skill folder that this install
+// creates (they go into the record); hooks.step(name) is called after each step (see stage.mjs).
+export function fillStaging(tree, stage, finalFolder, onFile = () => {}, options = {}) {
+  const { hooks } = options;
   for (const dir of tree.dirs) {
-    const target = path.join(destination, dir);
-    assertInside(destination, target);
-    makeFolderBelow(target, created);
+    const target = path.join(stage, dir);
+    assertInside(stage, target);
+    fs.mkdirSync(target, { recursive: true });
   }
+
+  const written = [];
   for (const relative of tree.files) {
     const source = path.join(tree.root, relative);
-    const target = path.join(destination, relative);
-    assertInside(destination, target);
+    const target = path.join(stage, relative);
+    assertInside(stage, target);
     // COPYFILE_EXCL refuses to write through, or over, anything that already exists at the target.
     fs.copyFileSync(source, target, fs.constants.COPYFILE_EXCL);
-    created.files.push(target);
     fs.chmodSync(target, fileMode(source));
     const sha256 = sha256File(target);
     if (sha256 !== sha256File(source)) {
-      throw new CliError('ui.install.error.hashMismatch', { path: target }, 3);
+      throw new CliError('ui.install.error.hashMismatch', { path: path.join(finalFolder, relative) }, 3);
     }
-    written.push({ relative, destinationPath: target, sha256 });
+    written.push({ relative, destinationPath: path.join(finalFolder, relative), sha256 });
     onFile(written.at(-1));
+    hooks?.step?.('copy');
   }
+
+  const text = `${JSON.stringify(buildRecord(written, tree.dirs, options.ancestors ?? []), null, 2)}\n`;
+  fs.writeFileSync(path.join(stage, RECORD_NAME), text, { flag: 'wx' });
+  onFile({ relative: RECORD_NAME, destinationPath: path.join(finalFolder, RECORD_NAME), sha256: sha256Hex(text) });
+  hooks?.step?.('record');
   return written;
-}
-
-function writeRecord(tree, destination, written, created, ancestors, onFile) {
-  const target = path.join(destination, RECORD_NAME);
-  const text = `${JSON.stringify(buildRecord(written, tree.dirs, ancestors), null, 2)}\n`;
-  fs.writeFileSync(target, text, { flag: 'wx' });
-  created.files.push(target);
-  onFile({ relative: RECORD_NAME, destinationPath: target, sha256: sha256Hex(text) });
-}
-
-// The folders above the destination that this copy created, as paths from baseDir with forward
-// slashes, joined with the ones an earlier install of the same folder had created (inherited), top first.
-function recordedAncestors(createdBefore, baseDir, inherited) {
-  const fresh = baseDir
-    ? createdBefore.map((folder) => path.relative(baseDir, folder)).filter((relative) => relative !== '' && !relative.startsWith('..')).map(toSlashes)
-    : [];
-  return [...new Set([...inherited, ...fresh])].sort((a, b) => a.split('/').length - b.split('/').length);
-}
-
-// Copies every file of the tree into destination and writes the install record there.
-// destination may already exist (a --force install that left someone's own files in place);
-// a file that is already there is never overwritten. Calls onFile({ relative, destinationPath, sha256 })
-// after each file. When anything fails, only what this call created is removed again;
-// error.leftBehind names a file that could not be removed.
-// options: { baseDir, inheritedAncestors } - baseDir is the project or home folder; the folders this call
-// creates between it and the destination go into the record, together with the inherited ones.
-export function copyTree(tree, destination, onFile = () => {}, options = {}) {
-  const created = { dirs: [], files: [] };
-  try {
-    makeAncestors(path.dirname(destination), created);
-    const ancestors = recordedAncestors([...created.dirs], options.baseDir, options.inheritedAncestors ?? []);
-    makeFolderBelow(destination, created);
-    const written = copyFiles(tree, destination, created, onFile);
-    writeRecord(tree, destination, written, created, ancestors, onFile);
-  } catch (error) {
-    const stuck = undoCreated(created);
-    const failure =
-      error instanceof CliError
-        ? error
-        : new CliError('ui.install.error.writeFailed', { path: destination, message: error.message }, 3);
-    failure.leftBehind = stuck;
-    throw failure;
-  }
 }

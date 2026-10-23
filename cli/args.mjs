@@ -11,6 +11,8 @@ export class UsageError extends Error {
   }
 }
 
+import { resolveLanguage } from '../skill/everything-mapped/scripts/lib/i18n.mjs';
+
 const LANGUAGES = ['da', 'en'];
 
 // spec: { booleans: ['force'], strings: ['dir', 'lang'], aliases: { h: 'help' } }
@@ -115,9 +117,8 @@ export function findLangOption(argv) {
   return undefined;
 }
 
-// Language for messages: --lang, then LC_ALL, then LANG (starting with "da"), else English.
+// Language for messages: --lang, then LC_ALL or LANG, "da" when it starts with da (any letter case),
+// else English. This is the rule of the scripts (resolveLanguage in the library); the CLI uses that function.
 export function chooseLanguage(explicit, env = {}) {
-  if (explicit) return explicit;
-  const locale = String(env.LC_ALL || env.LANG || '');
-  return /^da(?:[_.@-]|$)/i.test(locale) ? 'da' : 'en';
+  return resolveLanguage({ lang: explicit, env });
 }

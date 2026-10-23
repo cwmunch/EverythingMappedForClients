@@ -165,6 +165,8 @@ test('every field that is too long is cut, and the question says so', () => {
   engine.record(state, 'I.domain').unknown = true;
   assert.equal(hint('I.domain')[0].params.max, library.LIMITS.note.max, 'also while the question is marked as unknown');
   engine.record(state, 'A.deadline').note = 'short';
+  assert.deepEqual(hint('A.deadline'), [{ key: 'ui.form.hint.noteLost', params: {} }], 'a note without a date is said to be left out');
+  engine.record(state, 'A.deadline').date = '2026-12-01';
   assert.deepEqual(hint('A.deadline'), []);
 });
 

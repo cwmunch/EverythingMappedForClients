@@ -61,7 +61,9 @@ test('language choice: --lang, then LC_ALL or LANG starting with da, else Englis
   assert.equal(chooseLanguage(undefined, { LC_ALL: 'da_DK.UTF-8', LANG: 'en_US.UTF-8' }), 'da');
   assert.equal(chooseLanguage(undefined, { LC_ALL: 'C', LANG: 'da_DK.UTF-8' }), 'en');
   assert.equal(chooseLanguage(undefined, { LANG: 'de_DE.UTF-8' }), 'en');
-  assert.equal(chooseLanguage(undefined, { LANG: 'dansk' }), 'en');
+  assert.equal(chooseLanguage(undefined, { LANG: 'dansk' }), 'da', 'the rule of the scripts: the locale starts with da');
+  assert.equal(chooseLanguage(undefined, { LANG: 'Danish_Denmark.1252' }), 'da');
+  assert.equal(chooseLanguage(undefined, { LANG: 'nl_NL.UTF-8' }), 'en');
   assert.equal(chooseLanguage(undefined, {}), 'en');
 });
 

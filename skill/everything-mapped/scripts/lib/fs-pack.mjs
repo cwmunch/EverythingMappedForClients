@@ -237,34 +237,63 @@ function showNameBytes(name) {
   return describeAssetName(shown);
 }
 
-// Files below a folder as forward-slash names; hidden and temporary files (see isPackFile) and anything
-// that is not a plain file are left out. The folder is read as bytes: a name that is not valid UTF-8
-// cannot be used as text, so it is not listed in `names`. It goes into `invalid` as it is shown by
-// showNameBytes (a folder with such a name is listed once and not entered).
-function listPlainFiles(directory, shown, prefix = '', found = { names: [], invalid: [] }) {
-  let entries;
-  try {
-    entries = fs.readdirSync(directory, { withFileTypes: true, encoding: 'buffer' });
-  } catch (error) {
-    if (error.code === 'ENOENT') return found;
-    throw new PackError('ui.check.err.unreadable', { path: shown });
-  }
-  for (const entry of entries) {
-    const bytes = Buffer.from(entry.name);
-    const name = bytes.toString('utf8');
-    if (!isPackFile(name)) continue;
-    const isFolder = entry.isDirectory();
-    if (!isFolder && !entry.isFile()) continue;
-    if (!Buffer.from(name, 'utf8').equals(bytes)) {
-      found.invalid.push(`${prefix}${showNameBytes(bytes)}`);
-    } else if (isFolder) {
-      listPlainFiles(path.join(directory, name), shown, `${prefix}${name}/`, found);
-    } else {
-      found.names.push(`${prefix}${name}`);
+// The files in the assets folder, with the folder read as bytes:
+//   names     the plain files below the folder as forward-slash names, sorted; at most maxFiles of them
+//   omitted   how many plain files there are beyond maxFiles (they are counted, not listed)
+//   invalid   names that are not valid UTF-8, as showNameBytes shows them (not listed in names; a folder
+//             with such a name is named once and not entered)
+//   notPlain  links, sockets, pipes and other entries that are not plain files, shown the same way
+//   large     [{ name, size }] for the listed files over MAX_ASSET_BYTES (they are never read)
+//   bytes     the size of the listed files together
+// Hidden and temporary files (see isPackFile) are not part of a pack and are left out.
+function listAssets(directory, shown, maxFiles) {
+  const found = { names: [], invalid: [], notPlain: [] };
+  let total = 0;
+  // Names are kept for sorting up to this many; beyond it they are only counted.
+  const keepLimit = maxFiles * 4;
+  const walk = (folder, prefix) => {
+    let entries;
+    try {
+      entries = fs.readdirSync(folder, { withFileTypes: true, encoding: 'buffer' });
+    } catch (error) {
+      if (error.code === 'ENOENT') return;
+      throw new PackError('ui.check.err.unreadable', { path: shown });
     }
-  }
+    for (const entry of entries) {
+      const bytes = Buffer.from(entry.name);
+      const name = bytes.toString('utf8');
+      if (!isPackFile(name)) continue;
+      const isFolder = entry.isDirectory();
+      if (!isFolder && !entry.isFile()) {
+        found.notPlain.push(`${prefix}${showNameBytes(bytes)}`);
+      } else if (!Buffer.from(name, 'utf8').equals(bytes)) {
+        found.invalid.push(`${prefix}${showNameBytes(bytes)}`);
+      } else if (isFolder) {
+        walk(path.join(folder, name), `${prefix}${name}/`);
+      } else {
+        total += 1;
+        if (found.names.length < keepLimit) found.names.push(`${prefix}${name}`);
+      }
+    }
+  };
+  walk(directory, '');
   found.names.sort();
   found.invalid.sort();
+  found.notPlain.sort();
+  found.omitted = Math.max(0, total - maxFiles);
+  found.names = found.names.slice(0, maxFiles);
+  found.large = [];
+  found.bytes = 0;
+  for (const name of found.names) {
+    let size = 0;
+    try {
+      size = fs.lstatSync(path.join(directory, ...name.split('/'))).size;
+    } catch {
+      // A file that went away since it was listed has no size.
+    }
+    found.bytes += size;
+    if (size > MAX_ASSET_BYTES) found.large.push({ name, size });
+  }
   return found;
 }
 
@@ -279,35 +308,20 @@ function assertPlainFolders(root, schema) {
   }
 }
 
-// Refuses a pack with an asset over the limit. Reading a pack never opens the assets, so this is
-// checked where files are about to be written or hashed, before the first write.
-export function assertAssetSizes(root, schema, names) {
-  const folder = schema.generatedFiles.assetsDir;
-  if (names.length > MAX_ASSET_FILES) throw new PackError('ui.check.err.tooManyAssets', { path: folder, limit: MAX_ASSET_FILES });
-  for (const name of names) {
-    const shown = `${folder}/${name}`;
-    let size;
-    try {
-      size = fs.statSync(resolveInside(root, shown)).size;
-    } catch (error) {
-      if (error instanceof PackError) throw error;
-      throw new PackError('ui.check.err.assetUnreadable', { path: shown });
-    }
-    if (size > MAX_ASSET_BYTES) {
-      throw new PackError('ui.check.err.assetTooLarge', { path: shown, limit: describeBytes(MAX_ASSET_BYTES) });
-    }
-  }
-}
-
-function readAssets(root, schema) {
+function readAssets(root, schema, maxFiles) {
   const tablePath = schema.generatedFiles.assets;
   const tableText = readIfExists(resolveInside(root, tablePath), tablePath);
   const directory = resolveInside(root, schema.generatedFiles.assetsDir);
-  const listing = listPlainFiles(directory, schema.generatedFiles.assetsDir);
+  const listing = listAssets(directory, schema.generatedFiles.assetsDir, maxFiles);
   return {
     rows: tableText === null ? [] : parseWithPath(tablePath, () => parseAssets(tableText)),
     present: listing.names,
     invalid: listing.invalid,
+    notPlain: listing.notPlain,
+    large: listing.large,
+    omitted: listing.omitted,
+    fileLimit: maxFiles,
+    bytes: listing.bytes,
   };
 }
 
@@ -324,7 +338,9 @@ function pickDepth(schema, state, manifest) {
 
 // -> { root, language, depth, paths, files, assets, manifest, state }  (FORMAT.md section 11)
 // A folder without a pack gives a pack where every file is missing; it is not an error.
-export function parsePack(rootDir, schema) {
+// assets is { rows, present, invalid, notPlain, large, omitted, fileLimit, bytes }, see listAssets;
+// options.maxAssetFiles (default MAX_ASSET_FILES) is for tests.
+export function parsePack(rootDir, schema, options = {}) {
   const root = path.resolve(rootDir);
   const files = {};
   for (const file of schema.files) files[file.id] = readAnswerFile(root, file, schema);
@@ -338,7 +354,7 @@ export function parsePack(rootDir, schema) {
     depth: pickDepth(schema, state, manifest),
     paths: { ...schema.generatedFiles },
     files,
-    assets: readAssets(root, schema),
+    assets: readAssets(root, schema, options.maxAssetFiles ?? MAX_ASSET_FILES),
     manifest,
     state,
   };
@@ -352,7 +368,9 @@ export function isEmptyPack(pack) {
     !pack.manifest &&
     pack.assets.rows.length === 0 &&
     pack.assets.present.length === 0 &&
-    (pack.assets.invalid ?? []).length === 0
+    (pack.assets.invalid ?? []).length === 0 &&
+    (pack.assets.notPlain ?? []).length === 0 &&
+    !pack.assets.omitted
   );
 }
 
@@ -384,6 +402,57 @@ function makeFolder(folder, created) {
   }
 }
 
+// A temporary or backup file that a run left behind (it stopped in the middle) holds an old or a new
+// version of an answer. After every successful write the ones that are ours and older than ten minutes
+// are removed: a name made of the name of a file of the pack, a dot, twelve hexadecimal digits and
+// .tmp, a plain file (never a link), in the folders that hold the files of the pack. Nothing else is
+// touched. Returns the paths that were removed, sorted.
+const TEMPORARY_MAX_AGE_MS = 10 * 60 * 1000;
+const TEMPORARY_NAME = /^(.+)\.[0-9a-f]{12}\.tmp$/;
+
+export function sweepStaleTemporaryFiles(rootDir, schema, now = new Date()) {
+  const root = path.resolve(rootDir);
+  const generated = schema.generatedFiles;
+  const known = [...schema.files.map((file) => file.path), generated.state, generated.manifest, generated.openQuestions, generated.assets];
+  const namesByFolder = new Map();
+  for (const relative of known) {
+    const folder = path.posix.dirname(relative);
+    if (!namesByFolder.has(folder)) namesByFolder.set(folder, new Set());
+    namesByFolder.get(folder).add(path.posix.basename(relative));
+  }
+  const swept = [];
+  for (const [folder, names] of namesByFolder) {
+    const absoluteFolder = path.join(root, ...folder.split('/'));
+    let entries;
+    try {
+      if (fs.lstatSync(absoluteFolder).isSymbolicLink()) continue;
+      entries = fs.readdirSync(absoluteFolder);
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      const match = TEMPORARY_NAME.exec(entry);
+      if (!match || !names.has(match[1])) continue;
+      const absolute = path.join(absoluteFolder, entry);
+      try {
+        const stat = fs.lstatSync(absolute);
+        if (!stat.isFile() || now.getTime() - stat.mtimeMs <= TEMPORARY_MAX_AGE_MS) continue;
+        fs.unlinkSync(absolute);
+        swept.push(`${folder}/${entry}`);
+      } catch {
+        // A file that cannot be removed stays; nothing depends on it.
+      }
+    }
+  }
+  return swept.sort();
+}
+
+// Says on one line which leftover files were removed (nothing when none were).
+export function reportSwept(stream, i18n, swept) {
+  if (!swept || swept.length === 0) return;
+  stream.write(`${sanitizeForTerminal(i18n.t('ui.check.swept', { files: swept.join(', ') }))}\n`);
+}
+
 // Writes several files so that either all of them are written or none is. Every new text is first
 // written to a temporary file next to its target; the files that are there now get a backup name
 // (a hard link, or a copy); then the temporary files are renamed over the targets in a tight loop.
@@ -392,6 +461,11 @@ function makeFolder(folder, created) {
 // The error is a PackError (ui.check.err.writeFailed, with the file and the code of the system); if
 // a file could not be put back as well, ui.check.err.rollbackFailed names it and says where the old
 // version is. A PackError from a check (a link in place of a file) is thrown as it is.
+//
+// Just before the first rename every file in the list is read again and compared with `current`,
+// the text it had when the pack was read. If another program changed (or made, or removed) a file
+// in between, nothing is renamed and ui.check.err.changedWhileRunning names the file; this goes for
+// the files that are only compared as well, because what is written was worked out from them.
 //
 // files: [{ absolute, relative, text, current }]. A file whose text is already what is there
 // (text === current) is left alone. options.folders: absolute folders to make as part of the same
@@ -418,6 +492,12 @@ export function commitFiles(files, options = {}) {
         backUp(entry.file.absolute, entry.backup);
       }
     }
+    for (const file of files) {
+      working = file.relative;
+      if (readIfExists(file.absolute, file.relative, MAX_JSON_FILE_BYTES) !== file.current) {
+        throw new PackError('ui.check.err.changedWhileRunning', { path: file.relative });
+      }
+    }
     for (const entry of entries) {
       working = entry.file.relative;
       fs.renameSync(entry.temporary, entry.file.absolute);
@@ -437,7 +517,9 @@ export function commitFiles(files, options = {}) {
         notRestored.push(entry.file.relative);
       }
     }
-    for (const folder of created) {
+    // The deepest folders first: a folder can only be removed when it is empty.
+    const depth = (folder) => folder.split(path.sep).length;
+    for (const folder of [...new Set(created)].sort((first, second) => depth(second) - depth(first))) {
       try {
         fs.rmdirSync(folder);
       } catch {
@@ -491,12 +573,15 @@ function planGenerated(root, schema, i18n, base, { depth, today, now, contents }
   const manifestPath = schema.generatedFiles.manifest;
   const manifestText = `${JSON.stringify(manifest, null, 2)}\n`;
   if (!unchanged) assertReadable(manifestText, manifestPath, MAX_JSON_FILE_BYTES);
+  const manifestAbsolute = resolveInside(root, manifestPath);
+  const manifestCurrent = readIfExists(manifestAbsolute, manifestPath, MAX_JSON_FILE_BYTES);
   return {
     report,
     manifest,
     files: [
       { relative: openPath, absolute: openAbsolute, text: openText, current: openCurrent },
-      ...(unchanged ? [] : [{ relative: manifestPath, absolute: resolveInside(root, manifestPath), text: manifestText, current: null }]),
+      // An unchanged manifest stays as it is on disk, but is still compared before anything is renamed.
+      { relative: manifestPath, absolute: manifestAbsolute, text: unchanged ? manifestCurrent : manifestText, current: manifestCurrent },
     ],
   };
 }
@@ -513,13 +598,13 @@ export function refreshPack(rootDir, opts = {}) {
   const existing = parsePack(root, schema);
   const language = existing.language ?? opts.language;
   if (!language) throw new PackError('ui.check.err.noLanguage');
-  assertAssetSizes(root, schema, existing.assets.present);
   const base = existing.language ? existing : { ...existing, language };
   const i18n = opts.i18n ?? loadI18n(language, opts.schemaDir);
   const depth = opts.depth ?? base.depth;
   const plan = planGenerated(root, schema, i18n, base, { depth, today: opts.today ?? localDate(now), now, contents: new Map() });
   const written = commitFiles(plan.files);
-  return { written, pack: { ...base, manifest: plan.manifest }, report: plan.report, manifest: plan.manifest };
+  const swept = sweepStaleTemporaryFiles(root, schema, now);
+  return { written, swept, pack: { ...base, manifest: plan.manifest }, report: plan.report, manifest: plan.manifest };
 }
 
 // The assets table must stay readable: at most MAX_ASSET_ROWS rows, no line over MAX_LINE_CHARS and
@@ -555,12 +640,13 @@ export function writeAssetsTable(rootDir, rows, opts = {}) {
   const base = { ...pack, language: pack.language ?? language, assets: { ...pack.assets, rows: parseAssets(text) } };
   if (!pack.language) {
     const written = commitFiles([tableFile]);
-    return { written, pack: base, report: validatePack(base, schema, { today: opts.today ?? localDate(now) }) };
+    const swept = sweepStaleTemporaryFiles(root, schema, now);
+    return { written, swept, pack: base, report: validatePack(base, schema, { today: opts.today ?? localDate(now) }) };
   }
-  assertAssetSizes(root, schema, pack.assets.present);
   const plan = planGenerated(root, schema, i18n, base, { depth: base.depth, today: opts.today ?? localDate(now), now, contents: new Map([[tablePath, text]]) });
   const written = commitFiles([tableFile, ...plan.files]);
-  return { written, pack: { ...base, manifest: plan.manifest }, report: plan.report };
+  const swept = sweepStaleTemporaryFiles(root, schema, now);
+  return { written, swept, pack: { ...base, manifest: plan.manifest }, report: plan.report };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -679,17 +765,20 @@ function planInput(input, schema, pack) {
   return { entries, merged };
 }
 
-function nextState(input, pack, schema, language, depth, entries, now) {
+// `merged` holds all the answers as they will be: a focus question that is switched off by them no
+// longer applies and is dropped, so the interview never waits for a question that cannot be asked.
+function nextState(input, pack, schema, language, depth, entries, now, merged) {
   const previous = pack.state ?? {};
   const answered = new Set(entries.map(({ question }) => question.id));
   const previousFocus = knownIds(schema, previous.focus);
+  const applies = (id) => effectiveLevel(findQuestion(schema, id), merged, schema) !== 'skipped';
   const last = entries.length > 0 ? entries[entries.length - 1].question.module : previous.currentModule;
   return {
     schema: schema.schema,
     language,
     depth,
     currentModule: schema.moduleOrder.includes(last) ? last : schema.moduleOrder[0],
-    focus: input.focus !== undefined ? knownIds(schema, input.focus) : previousFocus.filter((id) => !answered.has(id)),
+    focus: (input.focus !== undefined ? knownIds(schema, input.focus) : previousFocus.filter((id) => !answered.has(id))).filter(applies),
     recipient: input.recipient !== undefined ? input.recipient.trim() : neutralizeHiddenCharacters(previous.recipient),
     notes: input.notes !== undefined ? input.notes : neutralizeHiddenCharacters(previous.notes),
     updatedAt: isoDateTime(now),
@@ -725,7 +814,6 @@ function parseNewText(relative, text, schema) {
 // file and the manifest with the hash of every asset. Returns the pack as it is going to be and
 // the generated files to write.
 function prepareWrite(plans, { root, schema, pack, state, depth, today, now, i18n }) {
-  assertAssetSizes(root, schema, pack.assets.present);
   for (const plan of plans) {
     if (Buffer.byteLength(plan.text, 'utf8') > MAX_TEXT_FILE_BYTES) {
       throw new InputError([{ key: 'ui.answer.err.resultTooLarge', params: { path: plan.relative, limit: describeBytes(MAX_TEXT_FILE_BYTES) } }]);
@@ -780,7 +868,7 @@ export function applyAnswers(rootDir, input, opts = {}) {
   if (readIfExists(assetsAbsolute, assetsPath) === null) {
     plans.push({ relative: assetsPath, absolute: assetsAbsolute, text: renderAssets([], i18n), current: null });
   }
-  const state = nextState(input, pack, schema, language, depth, entries, now);
+  const state = nextState(input, pack, schema, language, depth, entries, now, merged);
   const statePath = schema.generatedFiles.state;
   const stateAbsolute = resolveInside(root, statePath);
   plans.push({ relative: statePath, absolute: stateAbsolute, text: `${JSON.stringify(state, null, 2)}\n`, current: readIfExists(stateAbsolute, statePath) });
@@ -788,7 +876,8 @@ export function applyAnswers(rootDir, input, opts = {}) {
   const ready = prepareWrite(plans, { root, schema, pack, state, depth, today, now, i18n });
 
   const written = commitFiles([...plans, ...ready.files], { folders: [assetsFolder] });
-  return { written, report: ready.report, pack: ready.pack };
+  const swept = sweepStaleTemporaryFiles(root, schema, now);
+  return { written, swept, report: ready.report, pack: ready.pack };
 }
 
 // ---------------------------------------------------------------------------------------------

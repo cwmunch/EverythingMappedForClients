@@ -137,8 +137,15 @@ function parseListBody(text) {
   return raw.map(toListItem).filter((item) => item.text !== '');
 }
 
+// One line of text for an item or a note: line breaks become a space and white space of any kind at
+// the ends is dropped, because the file cannot hold it (a bullet or a "Note:" ends in white space
+// that is read as part of the marker). An item that is only white space is no item.
+function itemText(value) {
+  return joinLines(value).trim();
+}
+
 function toListItem(raw) {
-  const [text, note = ''] = splitPipes(raw, 2).map(joinLines);
+  const [text, note = ''] = splitPipes(raw, 2).map(itemText);
   return { text, note };
 }
 
@@ -196,8 +203,8 @@ export function textLength(text) {
 // Structured input -> body text
 
 function toInputItem(raw) {
-  if (isPlainObject(raw)) return { text: joinLines(raw.text), note: joinLines(raw.note) };
-  return { text: joinLines(raw), note: '' };
+  if (isPlainObject(raw)) return { text: itemText(raw.text), note: itemText(raw.note) };
+  return { text: itemText(raw), note: '' };
 }
 
 // Items come from `items`; a `text` with bullets is accepted when `items` is absent.
@@ -215,7 +222,8 @@ function inputChoiceIds(input) {
 function noteLines(note) {
   const text = encodeMarkup(normalizeText(note));
   if (text === '') return [];
-  return text.split('\n').map((line) => `Note: ${line}`.trimEnd());
+  // A note line starts after "Note:" and the white space behind it, so the indentation of a line is not kept.
+  return text.split('\n').map((line) => `Note: ${line.trimStart()}`.trimEnd());
 }
 
 function itemLine(item) {

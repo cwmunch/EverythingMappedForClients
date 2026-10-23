@@ -171,7 +171,7 @@ test('the head sets language, viewport, colour scheme and an inline icon', () =>
   for (const lang of ['da', 'en']) {
     assert.ok(markup.includes(`<p lang="${lang}">${dictionaries[lang]['ui.form.noscript']}</p>`), `${lang} text without JavaScript`);
     assert.ok(markup.includes(`<div lang="${lang}">\n<p>${dictionaries[lang]['ui.form.err.start']}</p>`), `${lang} text when the form cannot start`);
-    assert.ok(markup.includes(`<button type="button" class="btn emfc-discard">${dictionaries[lang]['ui.form.privacy.clear']}</button>`), `${lang} button that clears saved data when the form cannot start`);
+    assert.ok(markup.includes(`<button type="button" class="btn emfc-discard" data-confirm="${dictionaries[lang]['ui.form.privacy.confirm']}">${dictionaries[lang]['ui.form.privacy.clear']}</button>`), `${lang} button that clears saved data when the form cannot start, with its question`);
   }
   assert.equal((markup.match(/<div id="emfc-failed" hidden>/g) || []).length, 1);
 });

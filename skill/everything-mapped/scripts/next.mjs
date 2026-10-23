@@ -61,7 +61,9 @@ function run(context, io) {
   const report = validatePack(pack, schema, { depth: options.depth, today: localDate(now) });
   const questions = nextQuestions(pack, schema, report, options);
   const remaining = remainingByLevel(report, schema, options.depth);
-  const focusActive = Boolean(pack.state && Array.isArray(pack.state.focus) && pack.state.focus.length > 0);
+  // A focus counts only while one of its questions applies (it is known and not switched off).
+  const focusIds = pack.state && Array.isArray(pack.state.focus) ? pack.state.focus : [];
+  const focusActive = focusIds.some((id) => typeof id === 'string' && Object.hasOwn(report.questions, id) && report.questions[id].level !== 'skipped');
   const result = {
     language,
     depth: options.depth,

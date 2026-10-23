@@ -508,35 +508,35 @@ function makeSparse(file, bytes) {
   }
 }
 
-test('an asset over 500 MB makes check --write and answer exit 3 with a message and write nothing; reading still works', async (t) => {
+test('an asset over 500 MB does not stop check --write, answer or reading; it is flagged and never read', async (t) => {
   const { cwd, run, options } = setup(t);
   applyAnswers(cwd, { language: 'en', answers: [] }, options);
   makeSparse(path.join(cwd, 'docs', 'assets', 'big video.mp4'), 501 * 1024 * 1024);
-  const before = snapshot(cwd);
-  const expected = 'The file docs/assets/big video.mp4 is larger than 500 MB. Remove it or use a smaller file.\n';
   const write = await run(check, ['--write']);
-  assert.equal(write.code, 3);
-  assert.equal(write.err, expected);
+  assert.equal(write.code, 0, write.err);
   for (const [main, argv] of [[check, []], [assets, ['--scan']], [next, []]]) {
     const result = await run(main, argv);
-    assert.equal(result.code, 0, `${argv.join(' ')}: reading never opens an asset`);
+    assert.equal(result.code, 0, `${argv.join(' ')}`);
   }
   assert.ok((await run(assets, ['--scan', '--json'])).out.includes('assets/big video.mp4'));
   fs.writeFileSync(path.join(cwd, 'answers.json'), JSON.stringify({ answers: [{ id: 'B.name', status: 'complete', text: 'Nordlys' }] }));
   const answered = await run(answer, ['--from', 'answers.json']);
-  assert.equal(answered.code, 3);
-  assert.equal(answered.err, expected);
-  fs.rmSync(path.join(cwd, 'answers.json'));
-  assert.deepEqual(snapshot(cwd), before, 'answer wrote nothing before it refused');
+  assert.equal(answered.code, 0, answered.err);
+  const manifest = readJson(path.join(cwd, 'docs/intake-manifest.json'));
+  assert.deepEqual(manifest.files.find((entry) => entry.path === 'docs/assets/big video.mp4'), { path: 'docs/assets/big video.mp4', size: 501 * 1024 * 1024, skipped: 'tooLarge' });
 });
 
-test('the same message in Danish, and the pack works again once the file is small', async (t) => {
+test('the flag is in Danish too, and the manifest has the hash once the file is small', async (t) => {
   const { cwd, run, options } = setup(t);
   applyAnswers(cwd, { language: 'da', answers: [] }, options);
   makeSparse(path.join(cwd, 'docs', 'assets', 'stor.bin'), 501 * 1024 * 1024);
-  assert.equal((await run(check, ['--lang', 'da', '--write'])).err, 'Filen docs/assets/stor.bin er større end 500 MB. Fjern den, eller brug en mindre fil.\n');
+  assert.match((await run(check, ['--lang', 'da'])).out, /Filen stor\.bin fylder 501 MB og er dermed større end de 500 MB, som zip-filen kan rumme/);
+  assert.equal((await run(check, ['--write'])).code, 0);
   fs.truncateSync(path.join(cwd, 'docs', 'assets', 'stor.bin'), 1024);
   assert.equal((await run(check, ['--write'])).code, 0);
+  const entry = readJson(path.join(cwd, 'docs/intake-manifest.json')).files.find((file) => file.path === 'docs/assets/stor.bin');
+  assert.match(entry.sha256, /^[0-9a-f]{64}$/);
+  assert.equal(entry.skipped, undefined);
 });
 
 test('manifest hashes are made in chunks and equal the hash of the whole file', (t) => {

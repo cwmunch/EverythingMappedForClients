@@ -213,7 +213,13 @@ function createApp(env) {
     building: false,
     exporting: false,
     hasContent: false,
-    savedSignature: '',
+    // The answers as text (see stateSignature) at the moment they were last held somewhere else: in
+    // the browser's copy, or in a file that was saved or loaded. A pack is not one: it cannot be
+    // opened here again. What the page shows is safe when it is the same as one of the two.
+    saved: { browser: '', file: '' },
+    // The recipient the person typed or confirmed in this window; one that came from loaded data is
+    // asked about at the end.
+    ownRecipient: '',
     guarded: false,
     i18n: null,
     root: null,
@@ -250,7 +256,7 @@ function createApp(env) {
   app.setLanguage = (lang) => setLanguage(app, lang);
   app.yieldToPage = () => nextTurn(app.win);
   app.guard = (event) => leavingPage(app, event);
-  app.savedSignature = stateSignature(app);
+  app.saved.browser = stateSignature(app);
   return app;
 }
 
@@ -385,12 +391,20 @@ function stateSignature(app) {
 }
 
 function hasUnsavedChanges(app) {
-  return stateSignature(app) !== app.savedSignature;
+  const now = stateSignature(app);
+  return now !== app.saved.browser && now !== app.saved.file;
 }
 
 // What this window shows is now also somewhere else (stored, downloaded, or just loaded from there).
-function markSaved(app, signature = stateSignature(app)) {
-  app.savedSignature = signature;
+function markSaved(app, signature = stateSignature(app), via = 'browser') {
+  app.saved[via] = signature;
+  updateGuard(app);
+}
+
+// The browser's copy is not there for this window any more (keeping was turned off, or the copy was
+// removed): what only that copy held is not safe now. A file that holds the answers still does.
+function forgetBrowserCopy(app) {
+  app.saved.browser = '';
   updateGuard(app);
 }
 
@@ -464,8 +478,8 @@ function newWriteId() {
   return `${Date.now().toString(16)}${Math.random().toString(16).slice(2, 10)}`;
 }
 
-function removeStored(storage, key) {
-  for (const name of [key, key + BROKEN_SUFFIX, ...LEGACY_KEYS]) {
+function removeStored(storage, key, withChoice = false) {
+  for (const name of [key, key + BROKEN_SUFFIX, ...LEGACY_KEYS, ...(withChoice ? [key + KEEP_SUFFIX] : [])]) {
     try {
       storage.removeItem(name);
     } catch {
@@ -474,8 +488,7 @@ function removeStored(storage, key) {
   }
 }
 
-function storeCopy(app, revision) {
-  const writeId = newWriteId();
+function storeCopy(app, revision, writeId = newWriteId()) {
   const signature = stateSignature(app);
   try {
     const saved = app.engine.serializeState(app.state, { files: false, savedAt: isoDateTime(new Date()), revision, writeId });
@@ -532,18 +545,35 @@ function fillSync(app, sync = app.refs.sync) {
 function setSync(app, mode, options = {}) {
   app.syncMode = mode;
   app.conflict = mode === 'changed' || mode === 'removed';
+  if (mode === 'removed') forgetBrowserCopy(app);
   fillSync(app);
   showSaveStatus(app, { ok: false });
-  if (mode !== null && options.focus !== false && app.refs.sync) app.refs.sync.element.focus();
+  // The notice takes the focus, unless a field that is being typed in has it: the keys would go to the
+  // notice. It is an alert, so a screen reader reads it all the same.
+  if (mode !== null && options.focus !== false && !isTyping(app.doc.activeElement) && app.refs.sync) app.refs.sync.element.focus();
+}
+
+// Whether an element is one that keys are typed into.
+function isTyping(element) {
+  if (!element) return false;
+  if (element.localName === 'textarea' || element.localName === 'select') return true;
+  if (element.localName === 'input') {
+    const type = String(element.getAttribute('type') || 'text').toLowerCase();
+    return !['checkbox', 'radio', 'button', 'submit', 'reset', 'file', 'range', 'color', 'image'].includes(type);
+  }
+  return element.isContentEditable === true;
 }
 
 // The storage holds another copy, or none any more: saving waits and the person is asked. A window
-// with nothing typed since it last read or wrote the copy just takes the other one (adoptStored).
-// Returns true when it did.
+// that has read a copy (revision above 0), has nothing typed since and is not waiting for a choice just
+// takes the other copy (adoptStored); every other window waits for the person, also one that is
+// already showing "removed": what is on its page is only replaced when the person says so.
+// Returns true when it took the other copy.
 function raiseConflict(app, kind) {
   if (app.syncMode === kind) return false;
   cancelPending(app, 'save');
-  if (kind === 'changed' && !hasUnsavedChanges(app) && adoptStored(app, true)) return true;
+  const quiet = kind === 'changed' && app.syncMode === null && app.revision > 0 && !hasUnsavedChanges(app);
+  if (quiet && adoptStored(app, true)) return true;
   if (app.refs.top) showNotice(app.refs.top, 'status', '');
   setSync(app, kind);
   return false;
@@ -558,7 +588,7 @@ function stopKeeping(app, messageKey, notices = app.refs.top) {
   if (app.refs.keepBox) app.refs.keepBox.checked = false;
   cancelPending(app, 'save');
   setSync(app, null, { focus: false });
-  updateGuard(app);
+  forgetBrowserCopy(app);
   if (messageKey) showNotice(notices, 'status', app.t(messageKey));
 }
 
@@ -578,6 +608,10 @@ function writeState(app) {
     // Taking the other copy leaves this window as saved as it was ever going to be.
     return raiseConflict(app, stored.exists ? 'changed' : 'removed') ? { ok: true, files: attachedCount(app.state) > 0 } : refused;
   }
+  // Only the place in the form changed: the same copy is written again with the new place, so no other
+  // window is told that there is a new copy, and none of them jumps along.
+  const placeOnly = app.writeId !== '' && stateSignature(app) === app.saved.browser;
+  if (placeOnly) return storeCopy(app, app.revision, app.writeId);
   return storeCopy(app, app.engine.nextRevision(Math.max(app.revision, 0)));
 }
 
@@ -614,7 +648,7 @@ function confirmed(app, key) {
 // takes the focus (a window that had nothing typed and just follows the other one).
 function adoptStored(app, quiet) {
   const loaded = loadSavedState(app.engine, app.storage, app.key);
-  if (loaded.text) {
+  if (loaded.text || loaded.error) {
     app.fail(app.t('ui.form.sync.unreadable'));
     return false;
   }
@@ -624,12 +658,16 @@ function adoptStored(app, quiet) {
     return false;
   }
   const before = { revision: app.revision, writeId: app.writeId, syncMode: app.syncMode, conflict: app.conflict };
+  const focusId = quiet && app.doc.activeElement ? app.doc.activeElement.id : '';
+  // The other window's answers, but this window's place in the form.
+  const adopted = app.engine.adoptFiles(app.state, loaded.state);
+  if (app.engine.isPlace(app.state.currentModule)) adopted.currentModule = app.state.currentModule;
   app.revision = loaded.copy ? loaded.copy.revision : 0;
   app.writeId = loaded.copy ? loaded.copy.writeId : '';
   app.syncMode = null;
   app.conflict = false;
   try {
-    replaceState(app, app.engine.adoptFiles(app.state, loaded.state));
+    replaceState(app, adopted, 'browser');
   } catch (error) {
     Object.assign(app, before);
     renderApp(app);
@@ -638,6 +676,10 @@ function adoptStored(app, quiet) {
   }
   app.notify(app.t('ui.form.sync.shown'));
   if (!quiet) focusNotice(app.refs.top);
+  else if (focusId) {
+    const again = app.doc.getElementById(focusId);
+    if (again && typeof again.focus === 'function') again.focus();
+  }
   return true;
 }
 
@@ -686,12 +728,18 @@ function closeRemoved(app) {
 // "Continue where I left off": the answers an earlier visit saved are read, and keeping goes on.
 function continueSaved(app) {
   const loaded = loadSavedState(app.engine, app.storage, app.key);
+  if (loaded.error) {
+    app.fail(app.t('ui.form.sync.unreadable'));
+    focusNotice(app.refs.top);
+    return;
+  }
   if (loaded.text) {
-    // Saved answers that cannot be used are put aside, as when the page starts.
-    app.broken = setAsideBrokenData(app.storage, app.key, loaded.text);
-    setSync(app, null, { focus: false });
+    // Saved answers that cannot be read. This window does not keep answers (that is why they were
+    // offered), so nothing is written: the text is held in the page, where it can be downloaded, and
+    // the answers stay as they are in the storage until the person removes them.
+    app.broken = loaded.text;
     renderApp(app);
-    app.fail(app.t('ui.form.save.broken'));
+    app.fail(app.t('ui.form.offer.unreadable'));
     focusNotice(app.refs.top);
     return;
   }
@@ -709,7 +757,7 @@ function continueSaved(app) {
   app.syncMode = null;
   app.conflict = false;
   try {
-    replaceState(app, app.engine.adoptFiles(app.state, loaded.state));
+    replaceState(app, app.engine.adoptFiles(app.state, loaded.state), 'browser');
   } catch (error) {
     app.keep = false;
     app.revision = -1;
@@ -756,8 +804,8 @@ function removeSavedAnswers(app) {
 }
 
 // Reads what an earlier visit saved. -> { state, notes, copy } when it is whole, { text } when there
-// is something that cannot be used (the text is kept so the person can download it), {} when there is
-// nothing. The saved data comes from outside, so all of it is checked first (parseSavedText).
+// is something that cannot be used (the text is kept so the person can download it), { error: true }
+// when the page failed on data that looks whole (it is left alone), {} when there is nothing. The saved data comes from outside, so all of it is checked first (parseSavedText).
 function loadSavedState(engine, storage, key) {
   let text;
   try {
@@ -769,8 +817,11 @@ function loadSavedState(engine, storage, key) {
   try {
     const result = engine.parseSavedText(text);
     if (result.ok) return { state: result.state, notes: result.notes, copy: result.copy };
+    // The data is whole and the page cannot show it: that is no reason to move it out of the way.
+    if (result.internal) return { error: true };
   } catch (error) {
     if (typeof console !== 'undefined') console.error(error);
+    return { error: true };
   }
   return { text };
 }
@@ -781,7 +832,9 @@ function setAsideBrokenData(storage, key, text) {
   try {
     storage.setItem(key + BROKEN_SUFFIX, text);
   } catch {
-    // The copy stays in the page only.
+    // There is no room for the copy. The original stays where it is rather than be lost; the text is
+    // held in the page, where it can be downloaded.
+    return text;
   }
   try {
     storage.removeItem(key);
@@ -986,6 +1039,7 @@ function buildSetup(app) {
   }, removed);
   const recipient = textField(app, { id: 'recipient', value: state.recipient }, LIMITS.recipient, (value) => {
     state.recipient = value;
+    app.ownRecipient = value;
     changed();
   }, removed);
   limitNote.refresh();
@@ -1415,7 +1469,7 @@ async function attachFiles(app, question, input, redraw, notices) {
   const problems = [];
   let added = 0;
   for (const file of Array.from(input.files || [])) {
-    const refusal = app.engine.attachmentProblem(app.state, file, answerTextBytes(app));
+    const refusal = app.engine.attachmentProblem(app.state, file, answerTextBytes(app), question.id);
     if (refusal) {
       problems.push(app.t(refusal.key, refusal.params));
       continue;
@@ -1611,10 +1665,17 @@ function buildFinish(app) {
     checksEmpty: h('p', { class: 'muted' }, t('ui.form.finish.noChecks')),
     nameHint: h('p', { class: 'hint' }, t('ui.form.finish.needName')),
     sendHint: h('p', { class: 'muted' }),
+    recipientText: h('p', {}),
     download: h('button', { type: 'button', class: 'btn', disabled: app.building, onclick: () => downloadPack(app) }, t('ui.form.finish.download')),
     exportButton: h('button', { type: 'button', class: 'btn secondary', disabled: app.exporting, onclick: () => exportFormData(app) }, t('ui.form.finish.export')),
     notices: buildNotices(app),
   };
+  finish.recipientCheck = h(
+    'div',
+    { class: 'notice', hidden: true },
+    finish.recipientText,
+    h('button', { type: 'button', class: 'btn secondary', onclick: () => confirmRecipient(app) }, t('ui.form.finish.recipientRight')),
+  );
   // After a download: remove the saved answers from this browser (shown when there are some).
   finish.afterDownload = h(
     'div',
@@ -1642,6 +1703,7 @@ function buildFinish(app) {
         finish.nameHint,
         finish.download,
         finish.sendHint,
+        finish.recipientCheck,
         finish.exportButton,
         h('p', { class: 'muted' }, t('ui.form.finish.exportHint')),
         finish.notices.element,
@@ -1652,6 +1714,11 @@ function buildFinish(app) {
   );
   app.sections.set('finish', { section, heading, count });
   return section;
+}
+
+function confirmRecipient(app) {
+  app.ownRecipient = app.state.recipient;
+  app.refs.finish.recipientCheck.hidden = true;
 }
 
 function ownerText(app, owner) {
@@ -1696,11 +1763,19 @@ function refreshFinish(app, report, progress) {
     const label = t(`q.${problem.params.id}.label`);
     return app.h('li', {}, t('ui.form.finish.problemLine', { label, reason: problemText(app, problem) }));
   });
-  finish.checksList.replaceChildren(...dropped, ...flags.map((flag) => app.h('li', {}, describeFlag(flag, app.i18n))));
-  finish.checksEmpty.hidden = flags.length + dropped.length > 0;
+  // What the person typed that the pack leaves out (a note to a question without an answer, a date
+  // that is not one, a row with only a note): said here and on the question.
+  const unused = engine.unusedInputs(state, report).map((entry) => linkButton(app, t('ui.form.finish.problemLine', { label: t(`q.${entry.id}.label`), reason: t(entry.key) }), () => goToQuestion(app, entry.id)));
+  finish.checksList.replaceChildren(...dropped, ...unused, ...flags.map((flag) => app.h('li', {}, describeFlag(flag, app.i18n))));
+  finish.checksEmpty.hidden = flags.length + dropped.length + unused.length > 0;
   finish.nameHint.hidden = oneLine(state.respondent.name) !== '';
   const recipient = oneLine(state.recipient);
   setText(finish.sendHint, recipient === '' ? t('ui.form.finish.sendHint') : t('ui.form.finish.sendTo', { recipient }));
+  // A recipient that came from saved or loaded data is not one the person typed: it is shown to be
+  // checked before the pack is sent there.
+  const unchecked = recipient !== '' && state.recipient !== app.ownRecipient;
+  finish.recipientCheck.hidden = !unchecked;
+  setText(finish.recipientText, unchecked ? t('ui.form.finish.checkRecipient', { recipient }) : '');
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1715,6 +1790,9 @@ const PROBLEM_KEYS = { 'ui.answer.err.controlChars': 'ui.form.problem.controlCha
 
 function problemText(app, problem) {
   if (problem.key.startsWith('ui.form.')) return app.t(problem.key, problem.params);
+  // The list of files is too long (many files, or long descriptions): "split the text" would be wrong.
+  const question = app.engine.byId.get(problem.params.id);
+  if (problem.key === 'ui.answer.err.tooLong' && question && question.type === 'files') return app.t('ui.form.problem.filesTooLong');
   return app.t(PROBLEM_KEYS[problem.key] || 'ui.form.problem.other');
 }
 
@@ -1894,10 +1972,9 @@ async function downloadPack(app) {
   app.refs.finish.afterDownload.hidden = true;
   showNotice(notices(), 'status', app.t('ui.form.finish.building'));
   try {
-    const signature = stateSignature(app);
     const pack = await app.engine.buildPack(app.state, { now: new Date(), yieldToPage: app.yieldToPage, beforeWork: () => nextFrame(app.win) });
     triggerDownload(app, pack.name, new app.win.Blob(pack.parts, { type: 'application/zip' }));
-    markSaved(app, signature);
+    // A pack cannot be opened here again, so the answers are not safe because of it (see atRisk).
     const done = { name: pack.name, size: formatBytes(pack.size, app.state.language) };
     let message = app.t('ui.form.finish.done', done);
     if (pack.lacking.length > 0) message = app.t('ui.form.finish.doneWithout', { ...done, names: namesText(app, pack.lacking) });
@@ -1925,15 +2002,18 @@ async function exportFormData(app) {
     const plan = await app.engine.exportPlan(app.state, isoDateTime(now), { yieldToPage: app.yieldToPage });
     const blob = new app.win.Blob(plan.parts, { type: 'application/json' });
     triggerDownload(app, `everything-mapped-form-${localDate(now)}.json`, blob);
-    markSaved(app, signature);
+    markSaved(app, signature, 'file');
     let message = app.t('ui.form.finish.exported');
     if (plan.reattach.length > 0) {
       message = app.t(plan.withFiles ? 'ui.form.finish.exportedMissing' : 'ui.form.finish.exportedNoFiles', { names: namesText(app, plan.reattach) });
     }
     showNotice(notices(), 'status', message);
   } catch (error) {
-    if (typeof console !== 'undefined') console.error(error);
-    showNotice(notices(), 'alert', app.t('ui.form.err.exportTooLarge'));
+    // Too much for the browser to make into text is said so; anything else is a general failure.
+    const tooBig = Boolean(error) && error.name === 'RangeError';
+    const known = tooBig ? app.t('ui.form.err.exportTooLarge') : errorText(app, error, 'ui.form.err.unexpected');
+    if (typeof console !== 'undefined' && tooBig) console.error(error);
+    showNotice(notices(), 'alert', known);
   } finally {
     app.exporting = false;
     app.refs.finish.exportButton.disabled = false;
@@ -1947,10 +2027,11 @@ function downloadBrokenData(app) {
 
 // Replaces the state and the page. If the page cannot be built from the new state, the old state and
 // page are put back and the error is passed on.
-function replaceState(app, state) {
+function replaceState(app, state, via = 'file') {
   const previous = app.state;
   cancelWork(app);
   app.state = state;
+  app.ownRecipient = '';
   try {
     renderApp(app);
   } catch (error) {
@@ -1958,8 +2039,8 @@ function replaceState(app, state) {
     renderApp(app);
     throw error;
   }
-  // What the page shows now is what a file or the storage holds.
-  markSaved(app);
+  // What the page shows now is what a file or the storage holds (via says which).
+  markSaved(app, stateSignature(app), via);
 }
 
 // Loads form data from a file. All of it is read and checked first (parseSavedText); only when it is
@@ -1998,7 +2079,8 @@ function clearSavedData(app) {
   const confirmed = typeof app.win.confirm !== 'function' || app.win.confirm(app.t('ui.form.privacy.confirm'));
   if (!confirmed) return;
   cancelWork(app);
-  if (app.storage) removeStored(app.storage, app.key);
+  // Everything of the page goes, also the choice not to keep answers: the next visit starts as the first.
+  if (app.storage) removeStored(app.storage, app.key, true);
   app.broken = null;
   app.revision = app.storage && app.keep ? 0 : -1;
   app.writeId = '';
@@ -2040,12 +2122,19 @@ function startForm(doc, win, data) {
   // Keeping starts on for a web address and off for any other page (see "Keeping the answers"), and
   // is off wherever the person turned it off.
   const turnedOff = Boolean(storage) && keepIsOff(storage, key);
-  const keep = Boolean(storage) && !isLocalPage(win) && !turnedOff;
+  let keep = Boolean(storage) && !isLocalPage(win) && !turnedOff;
   // Where keeping is off, answers in the storage are removed when the person turned keeping off (they
   // have nothing to do there), and otherwise offered: never read without a click.
   if (turnedOff) removeStored(storage, key);
-  const offer = Boolean(storage) && !keep && !turnedOff && hasStoredCopy(storage, key);
-  const loaded = keep ? loadSavedState(engine, storage, key) : {};
+  let offer = Boolean(storage) && !keep && !turnedOff && hasStoredCopy(storage, key);
+  let loaded = keep ? loadSavedState(engine, storage, key) : {};
+  // Answers that look whole but that the page fails on are not touched and not written over: keeping
+  // stays off, and they are offered, so that the person can try again or remove them.
+  if (loaded.error) {
+    keep = false;
+    offer = true;
+    loaded = {};
+  }
   const fresh = () => engine.newState({ language: languageFromBrowser(win) });
   const base = { doc, win, engine, storage, keep };
   const broken = loaded.text ? setAsideBrokenData(storage, key, loaded.text) : keep ? readBrokenData(storage, key) : null;
@@ -2053,10 +2142,11 @@ function startForm(doc, win, data) {
   try {
     app.render();
   } catch (error) {
-    // Saved data that passed the checks but still cannot be shown: put it aside and start empty.
+    // Saved answers that passed the checks but cannot be shown: they are left as they are and offered,
+    // and the page starts empty and keeps nothing until the person decides.
     if (!loaded.state || !storage) throw error;
-    const text = setAsideBrokenData(storage, key, JSON.stringify(engine.serializeState(loaded.state, { files: false })));
-    app = createApp({ ...base, state: fresh(), recovered: true, broken: text });
+    if (typeof console !== 'undefined') console.error(error);
+    app = createApp({ ...base, keep: false, state: fresh(), offer: true });
     app.render();
   }
   watchPage(app);

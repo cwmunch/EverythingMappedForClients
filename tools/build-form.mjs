@@ -191,12 +191,14 @@ function noscriptBlock(data) {
 }
 
 // Shown when the form cannot start: the message and a button that removes the saved data, in each
-// language. The button is wired by rescue.js, which does not depend on the form's script.
+// language, with the question it asks first (data-confirm). The button is wired by rescue.js, which
+// does not depend on the form's script.
 function failureBlock(data) {
   const sections = data.schema.languages.map((lang) => {
     const message = escapeHtml(data.dictionaries[lang]['ui.form.err.start'] ?? '');
     const button = escapeHtml(data.dictionaries[lang]['ui.form.privacy.clear'] ?? '');
-    return `<div lang="${lang}">\n<p>${message}</p>\n<p><button type="button" class="btn emfc-discard">${button}</button></p>\n</div>`;
+    const question = escapeHtml(data.dictionaries[lang]['ui.form.privacy.confirm'] ?? '');
+    return `<div lang="${lang}">\n<p>${message}</p>\n<p><button type="button" class="btn emfc-discard" data-confirm="${question}">${button}</button></p>\n</div>`;
   });
   return `<div id="emfc-failed" hidden>\n${sections.join('\n')}\n</div>`;
 }

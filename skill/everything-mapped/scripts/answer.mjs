@@ -12,7 +12,9 @@ import {
   isMainModule,
   nextQuestions,
   openScriptContext,
+  printProblems,
   readInputFile,
+  reportSwept,
   stringifyJson,
 } from './lib/index.mjs';
 import { InputError, localDate } from './lib/util.mjs';
@@ -46,7 +48,6 @@ function run(context, io) {
   const input = withLanguage(readInput(file), context);
   const result = applyAnswers(root, input, { schema, schemaDir, now, today: localDate(now) });
   const next = nextQuestions(result.pack, schema, result.report, { count: NEXT_COUNT }).map((question) => question.id);
-  if (values.delete) fs.rmSync(file, { force: true });
   const summary = {
     written: result.written,
     gate1: result.report.gate1,
@@ -54,6 +55,15 @@ function run(context, io) {
     next,
   };
   io.stdout.write(`${stringifyJson(summary)}\n`);
+  reportSwept(io.stderr, context.i18n, result.swept);
+  // The answers are saved. A file that cannot be removed is a warning, not a failure.
+  if (values.delete) {
+    try {
+      fs.rmSync(file, { force: true });
+    } catch (error) {
+      printProblems(io.stderr, context.i18n, [{ key: 'ui.answer.warn.deleteFailed', params: { path: file, code: error && error.code ? String(error.code) : 'EIO' } }]);
+    }
+  }
   return 0;
 }
 

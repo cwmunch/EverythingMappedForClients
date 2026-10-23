@@ -32,6 +32,8 @@ const YIELD_EVERY_BYTES = 8 * 1024 * 1024;
 // What is left out of the room for attached files at attaching time, besides the answer files: the
 // open-questions text and the new row of the file list are not known yet.
 const ATTACH_EXTRA_HEADROOM_BYTES = 1024 * 1024;
+// Kept free in the list of files of a question for what writing it adds (escapes, markers).
+const FILE_LIST_MARGIN = 4096;
 // Work on a big file is done in slices of this size (a multiple of 64, the block size of SHA-256).
 const WORK_SLICE_BYTES = 4 * 1024 * 1024;
 const DEFLATE_SLICE_BYTES = 1024 * 1024;
@@ -714,14 +716,24 @@ function numberedName(stem, extension, number) {
   }
 }
 
+// Where the numbering of each name stopped last time, per set of taken names: thousands of files
+// called "a.png" are numbered one after the other, not each from 2 again.
+const NUMBERING = new WeakMap();
+
 function uniqueName(name, taken) {
   if (!taken.has(foldPackName(name))) return name;
   const dot = name.lastIndexOf('.');
   const stem = dot > 0 ? name.slice(0, dot) : name;
   const extension = dot > 0 ? name.slice(dot) : '';
-  for (let number = 2; ; number += 1) {
+  if (!NUMBERING.has(taken)) NUMBERING.set(taken, new Map());
+  const counters = NUMBERING.get(taken);
+  const key = foldPackName(`${stem}\u0000${extension}`);
+  for (let number = counters.get(key) ?? 2; ; number += 1) {
     const candidate = numberedName(stem, extension, number);
-    if (!taken.has(foldPackName(candidate))) return candidate;
+    if (!taken.has(foldPackName(candidate))) {
+      counters.set(key, number + 1);
+      return candidate;
+    }
   }
 }
 
@@ -851,7 +863,7 @@ function createEngine(data) {
   // needs PACK_HEADROOM_BYTES for its own files, so a single file over the difference can never fit,
   // and the files together may not go over it either. `textBytes` (optional) is what the answer files
   // take at the moment; the page passes it, so what is allowed here is what the build allows.
-  function attachmentProblem(state, file, textBytes = 0) {
+  function attachmentProblem(state, file, textBytes = 0, qid = null) {
     const name = cleanLine(file.name, MAX_NAME_BYTES);
     const nominal = PACK_MAX_BYTES - PACK_HEADROOM_BYTES - ATTACH_EXTRA_HEADROOM_BYTES;
     const room = nominal - textBytes;
@@ -859,12 +871,43 @@ function createEngine(data) {
     if (file.size > room) return { key: 'ui.form.files.tooBig', params: { name, limit } };
     if (state.assets.length >= MAX_ATTACHMENTS) return { key: 'ui.form.files.tooMany', params: { name, max: MAX_ATTACHMENTS } };
     if (attachedBytes(state) + file.size > room) return { key: 'ui.form.files.totalTooBig', params: { name, limit } };
+    if (qid !== null && !contentlessEntry(state, qid, file.name, file.size)) {
+      // The list of files is one answer, and an answer may be at most MAX_BODY_CHARS long.
+      const taken = new Set(state.assets.map((asset) => foldPackName(asset.name)));
+      const line = fileListLine(safeAssetName(file.name, taken, schema.generatedFiles.assetsDir), '');
+      if (fileListLength(state, qid) + line > MAX_BODY_CHARS - FILE_LIST_MARGIN) return { key: 'ui.form.files.listFull', params: { name } };
+    }
     return null;
+  }
+
+  // The length of one line of the list of files, as the pack writes it: "- assets/name | description".
+  function fileListLine(name, what) {
+    return `- assets/${name}${what === '' ? '' : ` | ${escapePipes(what)}`}\n`.length;
+  }
+
+  // The length of the list of files of one question: what the answer of that question is made of.
+  function fileListLength(state, qid) {
+    return state.assets.filter((asset) => asset.qid === qid && asset.data).reduce((sum, asset) => sum + fileListLine(asset.name, cleanField(asset.what, LIMITS.asset)), 0);
+  }
+
+  // The entry of a file that is on the list but has no content on the page (after a reload, or loaded
+  // from form data without files) and that a file with this name and size is the one for.
+  function contentlessEntry(state, qid, fileName, size) {
+    const wanted = foldPackName(safeAssetName(fileName, new Set(), schema.generatedFiles.assetsDir));
+    return state.assets.find((asset) => asset.qid === qid && !asset.data && foldPackName(asset.name) === wanted && (asset.size === 0 || asset.size === size));
   }
 
   // Adds a file. The name is cleaned (safeAssetName); when that changes it, `renamedFrom` keeps the
   // name the person gave, with the characters that were hidden made visible, so the page can say so.
   function addAsset(state, qid, file) {
+    // A file that is attached again, as the page asks after a reload, takes the place of its entry
+    // (and keeps its description) instead of becoming a second one with a number.
+    const waiting = contentlessEntry(state, qid, file.name, file.data.length);
+    if (waiting) {
+      waiting.data = file.data;
+      waiting.size = file.data.length;
+      return waiting;
+    }
     const taken = new Set(state.assets.map((asset) => foldPackName(asset.name)));
     const name = safeAssetName(file.name, taken, schema.generatedFiles.assetsDir);
     const asset = {
@@ -1087,12 +1130,50 @@ function createEngine(data) {
     return full[0] ?? 0;
   }
 
+  // What a person typed into a question that the pack leaves out, as a list of kinds: 'note' (a note
+  // to a question that has no answer, so there is nothing for it to go with), 'date' (a date or a due
+  // date that is not a date, or has a year the library does not take) and 'row' (a row of a link
+  // list that has a note and no link). Nothing typed may go missing without a word.
+  function unusedKinds(question, raw) {
+    const own = cleanRecord(question, raw || {});
+    const kinds = [];
+    const invalidDate = (value) => typeof value === 'string' && value !== '' && !isValidDate(value);
+    if (own.unknown) {
+      if (invalidDate(raw && raw.due)) kinds.push('date');
+      return kinds;
+    }
+    const noteWithoutAnswer = normalizeText(own.note) !== '';
+    if (question.type === 'choice' || question.type === 'multichoice') {
+      if (cleanChoices(question, own.choice).length === 0 && noteWithoutAnswer) kinds.push('note');
+    }
+    if (question.type === 'date') {
+      if (invalidDate(raw && raw.date)) kinds.push('date');
+      if (!isValidDate(own.date) && noteWithoutAnswer) kinds.push('note');
+    }
+    if (question.type === 'urllist' && (own.items ?? []).some((item) => oneLine(item.text) === '' && oneLine(item.note) !== '')) kinds.push('row');
+    return kinds;
+  }
+
+  const UNUSED_KEYS = { note: 'ui.form.hint.noteLost', date: 'ui.form.hint.dateInvalid', row: 'ui.form.hint.rowLost' };
+
+  // -> [{ id, kind, key }] for the questions that are in the pack's scope (a question that is switched
+  // off says nothing: what is typed there is counted as left out, and kept).
+  function unusedInputs(state, report) {
+    const found = [];
+    for (const question of ordered) {
+      if (!isVisible(report, question.id, state.depth)) continue;
+      for (const kind of unusedKinds(question, state.answers[question.id])) found.push({ id: question.id, kind, key: UNUSED_KEYS[kind] });
+    }
+    return found;
+  }
+
   // Soft hints for one question: [{ key, params }]. They never block anything.
   function hints(question, state, report) {
     const own = cleanRecord(question, state.answers[question.id] || {});
     const found = [];
     const full = fullFieldSize(question, own);
     if (full > 0) found.push({ key: 'ui.form.hint.atLimit', params: { max: full } });
+    for (const kind of unusedKinds(question, state.answers[question.id])) found.push({ key: UNUSED_KEYS[kind], params: {} });
     if (own.unknown) return found;
     const rules = question.rules || {};
     const text = question.type === 'text' || question.type === 'longtext' ? normalizeText(own.text) : '';
@@ -1271,7 +1352,7 @@ function createEngine(data) {
       leftOut: analysis.leftOut,
       lacking: analysis.lacking,
       totalBytes,
-      large: totalBytes > SIZE_WARNING_BYTES,
+      large: zip.size > SIZE_WARNING_BYTES,
     };
     // The zip as one array, made only when asked for (tests, small packs): a big pack stays in pieces.
     Object.defineProperty(pack, 'bytes', {
@@ -1338,7 +1419,9 @@ function createEngine(data) {
   // file and must be attached again, by name (a file of no bytes comes back by itself and is not
   // listed). options: { yieldToPage }, as for buildPack.
   async function exportPlan(state, savedAt, options = {}) {
-    const withData = state.assets.filter((asset) => asset.data);
+    // The files as they are now: the page goes on while the text is made (a file may be attached).
+    const assets = state.assets.slice();
+    const withData = assets.filter((asset) => asset.data);
     const base64Total = withData.reduce((sum, asset) => sum + base64Length(asset.data.length), 0);
     const withFiles = base64Total <= EXPORT_FILES_BUDGET;
     const saved = serializeState(state, { files: false, savedAt });
@@ -1354,7 +1437,7 @@ function createEngine(data) {
     };
     literal(text.slice(0, at));
     literal('[');
-    for (const [index, asset] of state.assets.entries()) {
+    for (const [index, asset] of assets.entries()) {
       const meta = JSON.stringify(saved.assets[index]);
       if (index > 0) literal(',');
       if (withFiles && asset.data) {
@@ -1376,7 +1459,7 @@ function createEngine(data) {
       parts,
       bytes,
       withFiles,
-      reattach: state.assets.filter((asset) => (!withFiles || !asset.data) && asset.size > 0).map((asset) => asset.name),
+      reattach: assets.filter((asset) => (!withFiles || !asset.data) && asset.size > 0).map((asset) => asset.name),
     };
   }
 
@@ -1511,7 +1594,9 @@ function createEngine(data) {
     try {
       analyze(result.state);
     } catch {
-      return { ok: false, key: 'ui.form.err.importInvalid' };
+      // The data is whole as far as can be seen; it is the page that cannot show it. `internal` tells
+      // the caller that nothing is wrong with the data, so it is not set aside as if it were.
+      return { ok: false, key: 'ui.form.err.importInvalid', internal: true };
     }
     return result;
   }
@@ -1539,12 +1624,14 @@ function createEngine(data) {
     isVisible,
     progress,
     hints,
+    unusedInputs,
     buildPack,
     packEntries,
     serializeState,
     exportParts,
     exportPlan,
     adoptFiles,
+    isPlace: (id) => schema.moduleOrder.includes(id) || id === 'finish',
     copyOf: savedCopyOf,
     nextRevision,
     restoreState,
@@ -1557,6 +1644,7 @@ const EMFC_LIBRARY = {
   LIMITS,
   WRAP_WIDTH,
   MAX_ROWS,
+  MAX_BODY_CHARS,
   MAX_ATTACHMENTS,
   EXPORT_FILES_BUDGET,
   IMPORT_MAX_BYTES,

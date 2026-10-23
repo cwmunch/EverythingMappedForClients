@@ -1,6 +1,7 @@
 // check.mjs [--root <dir>] [--lang da|en] [--depth essentials|standard|full] [--json] [--strict] [--write]
 // Reads the pack and says what is missing. With --write it also refreshes the manifest and the
-// open-questions file. Exit codes: 0 ok, 1 must-answer questions open (only with --strict),
+// open-questions file (when no answer has set the language of the pack yet it writes nothing and says
+// so; the language is never taken from the console). Exit codes: 0 ok, 1 must-answer questions open (only with --strict),
 // 2 wrong use, 3 no pack or an unreadable pack. (FORMAT.md section 12)
 
 import {
@@ -12,6 +13,7 @@ import {
   printProblems,
   questionLabel,
   refreshPack,
+  reportSwept,
   sanitizeForTerminal,
   stringifyJson,
   textOr,
@@ -92,10 +94,14 @@ function run(context, io) {
   const today = localDate(now);
   let report = validatePack(pack, schema, { depth, today });
   let written = [];
-  if (values.write) {
-    const refreshed = refreshPack(root, { schema, schemaDir: context.schemaDir, language: context.language, depth, now, today });
+  if (values.write && !pack.language) {
+    // The language of a pack is set by its first answer, not by the language of the console.
+    io.stderr.write(`${sanitizeForTerminal(i18n.t('ui.check.noLanguageWrite'))}\n`);
+  } else if (values.write) {
+    const refreshed = refreshPack(root, { schema, schemaDir: context.schemaDir, depth, now, today });
     report = refreshed.report;
     written = refreshed.written;
+    reportSwept(io.stderr, i18n, refreshed.swept);
   }
   if (values.json) {
     const completeness = { ...report.completeness, gate1Ready: report.gate1.ready, gate1Blocking: report.gate1.blocking };

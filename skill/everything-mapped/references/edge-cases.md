@@ -23,7 +23,9 @@
    changes from redesign to new site, which switches off the question about the existing site), answer.mjs refuses
    with exit code 2 and writes nothing; it names the question and the answer that controls it. Ask the person whether
    the old answer should go. If it should, send that question with status `missing` in the same input as the change;
-   if not, keep the earlier answer.
+   if not, keep the earlier answer. If a hand edit has already switched the question off, the old answer stays in the
+   file but does not count, and `check` shows the info flag `answer.notApplicable`: ask the person which is right, and
+   send the old answer with status `missing` to drop it.
 
 ## Contradictory answers
 
@@ -115,6 +117,11 @@ now, ask who has them, and note the logo question as an open point with that own
 
 ## Other situations
 
+- **Two assistants or windows at the same time**: two answer commands at the same time can lose an answer. The second
+  one now stops with exit code 3 and the message "Another program changed <file> while this ran. Nothing was changed."
+  Run the same command again.
+- **Very large files**: a folder with a file over 500 MB, or more than 50,000 files, still works. The files are
+  flagged and not read, and `pack` refuses them. Ask the person to leave them out and send them another way.
 - **Wrong folder**: if the working directory holds a software project or unrelated files, or `docs/` exists without
   `docs/intake-state.json`, ask whether this is the right folder before writing anything.
 - **"Just make something up"**: decline kindly; the answers must be theirs. Offer the example, or note an open point.

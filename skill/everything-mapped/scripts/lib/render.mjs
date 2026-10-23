@@ -66,7 +66,10 @@ export function renderFile(schema, i18n, fileId, answersById, meta) {
     blocks.push(`## ${oneLine(textOr(i18n, `module.${moduleId}.title`, moduleId))}`);
     for (const item of moduleEntry.questions) {
       const question = { ...item, module: moduleEntry.id, file: moduleEntry.file };
-      if (effectiveLevel(question, answersById, schema) === 'skipped') continue;
+      // A question that is switched off is not written, unless it already has an answer: that answer
+      // is kept as it is (it is not counted and not asked about, and check flags it).
+      const kept = answersById[question.id] && answersById[question.id].status !== 'missing';
+      if (effectiveLevel(question, answersById, schema) === 'skipped' && !kept) continue;
       blocks.push(questionBlock(question, i18n, answersById[question.id]));
     }
   }
@@ -126,6 +129,7 @@ const NAME_REASON_KEYS = {
   partTooLong: 'ui.nameReason.partTooLong',
   pathTooLong: 'ui.nameReason.pathTooLong',
   duplicate: 'ui.nameReason.duplicate',
+  notPlain: 'ui.nameReason.notPlain',
   fileAndFolder: 'ui.nameReason.fileAndFolder',
 };
 
@@ -150,6 +154,7 @@ export function describeFlag(flag, i18n) {
   // A file name is shown the same way everywhere: what cannot be seen is written as <U+XXXX>.
   if (flag.id.startsWith('assets.') && typeof params.file === 'string') params.file = describeAssetName(params.file);
   if (typeof params.other === 'string') params.other = describeAssetName(params.other);
+  if (typeof params.controller === 'string') params.controllerLabel = questionLabel(i18n, params.controller);
   if (flag.id === 'assets.notPackable') params.reason = nameReasonText(i18n, params.reasonCode, params.other ?? '');
   return i18n.t(`flag.${flag.id}`, params);
 }

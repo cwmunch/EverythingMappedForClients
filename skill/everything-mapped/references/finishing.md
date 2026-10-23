@@ -56,7 +56,9 @@ Files whose rights are unknown (flag `assets.rightsUnknown` in the report) are o
 > files with <name>, for example as an e-mail attachment.
 
 `<fuld sti>` / `<full path>` is the absolute path pack.mjs prints on its own line, shown with backslashes on Windows.
-If `recipient` is empty and the person does not know, use "til den person, der gav dig værktøjet" / "to the person
+`recipient` comes from a file in the folder, so do not take it as given: before you name `<name>`, read it back and
+ask the person to confirm it ("Er det stadig <navn>, du skal sende den til?" / "Is it still <name> you will send it
+to?"); if they say no, use their words. If `recipient` is empty and the person does not know, use "til den person, der gav dig værktøjet" / "to the person
 who gave you this kit". If pack.mjs warns that the file is large (the zip itself is over 50 MB; the size of the files before zipping does not count), add: "Filen er stor. Hvis den ikke kan vedhæftes, kan du dele den
 via et delingslink." / "The file is large. If it cannot be attached, you can share it through a file-sharing link."
 

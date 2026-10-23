@@ -117,26 +117,42 @@ The validator may **downgrade** a declared `complete` to `partial` when schema r
   text keeps every other character as written (ZWJ, ZWNJ, soft hyphen, LRM, RLM, variation selectors, U+202F, other white space). A pack
   that already holds a refused character is read and flagged `text.hiddenCharacters`, also in `intake-state.json` (`recipient`,
   `notes`) and in the manifest (project name, respondents). Printing to a terminal replaces the refused and the confusable characters with
-  visible stand-ins; stored text is never rewritten by that.
+  visible stand-ins; stored text is never rewritten by that. Hidden characters in an existing pack are flagged and the answer files are not
+  rewritten, but the next write replaces them with `<U+XXXX>` markers in the `recipient` and `notes` of the state file and in the cells of
+  the assets table.
 - In free text (`text`, `longtext`, and the note of a deferred or missing answer) a line that is only `=` signs or only `-` signs (up to
   three spaces in front, spaces after) is stored with one more backslash in front, so it cannot turn the line above it into a heading;
   the reader takes that backslash off again.
 - Input limits: respondent name, respondent role, recipient and an owner at most 200 characters, notes at most 200 KB, the respondent line at
   most 5,000 characters; longer input is exit `2` and names the field. Text that would grow past a line of 20,000 characters or an answer of
-  200 KB when it is stored is exit `2` and names the file.
+  200 KB when it is stored is exit `2` and names the file. The limits of 20,000 characters per line, 200 KB per answer and 200 characters
+  per field count UTF-16 code units (an emoji counts as 2); file sizes count bytes.
+- White space: in list items and notes, white space of any kind (also no-break space and ideographic space) at the ends is dropped, an item
+  that is only white space is no item (an answer whose only item is white space is refused with `noContent`), and the indentation of a note
+  line is not kept.
 - Writes: `answer`, `check --write` and the assets commands write all their files together. Every new text goes to a temporary file first,
-  the old files are kept under hidden backup names, then all are renamed. If anything fails the old files are put back and the exit code is
-  `3` with "Cannot save <file> (<code>). Nothing was changed." Files of a pack are opened without following a link and without waiting for a
-  pipe; a link or a file that is not a regular file is refused with a message that names it.
+  the old files are kept under hidden backup names, then all are renamed. Just before the rename, every file is read again; if another
+  program changed one of them, nothing is written, the exit code is `3` and the message is "Another program changed <file> while this ran.
+  Nothing was changed. Run the command again.", and the input file is not deleted. If any other step fails the old files are put back and
+  the exit code is `3` with "Cannot save <file> (<code>). Nothing was changed." After a successful write, leftover files named
+  `<file of the pack>.<12 hex digits>.tmp` in `docs` and `docs/01-brand` that are older than ten minutes are removed and named on one line on
+  stderr. If `--delete` cannot remove the input file after a successful write, the command prints a warning with the path and still exits
+  `0`. Files of a pack are opened without following a link and without waiting for a pipe; a link or a file that is not a regular file is
+  refused with a message that names it.
 - Changing an answer that other questions depend on: if the change switches off a question (`showIf` becomes false) that already has an
   answer, `answer` refuses with exit `2` and writes nothing, naming the question and the answer that controls it. The same input may send
-  that question with status `missing` to clear it.
-- Limits: 20,000 characters per line, 200 KB per answer, 2 MB per answer file, 2 MB per input JSON or rows file, 20 MB per JSON file,
-  500 MB per asset. Parsing refuses an oversize file with exit `3`; `answer` input with exit `2`.
+  that question with status `missing` to clear it. An answer to a question that another answer switches off (a hand edit can cause this) is
+  kept in the file as written, is not counted or asked about, and `check` reports it with the info flag `answer.notApplicable`; `answer`
+  refuses to give a switched-off question an answer. `state.focus` holds only questions that apply: `answer` drops the ones that its answers
+  switch off, and `next` ignores a focus none of whose questions applies.
+- Limits: 20,000 characters per line, 200 KB per answer, 2 MB per answer file, 2 MB per input JSON or rows file, 20 MB per JSON file.
+  Parsing refuses an oversize file with exit `3`; `answer` input with exit `2`. Only `pack` enforces the hard limits of 500 MB per file,
+  500 MB in all and 5,000 files: `check`, `answer`, `check --write` and `assets` keep working with larger packs. A file over 500 MB is
+  listed without being read (`assets.tooLarge`), and files beyond the first 50,000 in alphabetical order are counted and left out
+  (`assets.tooMany`).
 - Assets: at most 5,000 table rows, 20,000 characters per line and 2 MB for `docs/assets.md`. Writing a table that would exceed one of
   them is refused with exit `2`, names the row or file to cut and writes nothing; reading an existing oversize table is refused with exit
-  `3` (`tooManyRows`, `lineTooLong`; not flags). At most 50,000 files below `docs/assets/` (more is refused on write). Asset flags are capped at
-  100 per kind.
+  `3` (`tooManyRows`, `lineTooLong`; not flags). Asset flags are capped at 100 per kind.
 - Open questions file: at most 200 bullets (then one "and N more" line); table cells and flag messages are cut at 300 characters.
   The generated text and the manifest are size-checked before the first write (`generatedTooLarge`), so `answer` and `check --write`
   write nothing when they would fail.
@@ -201,6 +217,10 @@ Generated, never hand-written:
   "files": [ { "path": "docs/00-brief.md", "sha256": "<hex>" } ]
 }
 ```
+
+Each entry of `files` is `{ path, sha256 }`. A file over 500 MB is not read: its entry is `{ path, size, skipped: "tooLarge" }` and has no
+`sha256`, so a reader must not assume every entry has one. The manifest lists the six answer files, the open-questions file, the assets table
+and the assets; it does not list `docs/intake-state.json` or itself.
 
 ## 7. State (`docs/intake-state.json`)
 
@@ -313,7 +333,7 @@ into one browser script with a simple text transform (drop `import`/`export` key
 ```
 { root, language, depth,
   files: { [fileId]: { path, exists, frontMatter, answers, flags } },
-  assets: { rows: [...], present: ['logo.svg', ...] },
+  assets: { rows: [...], present: ['logo.svg', ...], invalid, notPlain, large: [{ name, size }], omitted, fileLimit, bytes },
   manifest: object|null, state: object|null }
 ```
 
@@ -339,7 +359,8 @@ these `main` functions instead of starting processes.
 
 - `check.mjs [--json] [--strict] [--depth essentials|standard|full]`: prints a human summary (verdict, counts, gate 1 blockers,
   flags, next steps) or the Report plus the manifest `completeness` as JSON. Also regenerates the manifest and open-questions file
-  **only with `--write`**.
+  **only with `--write`**. When no answer, state file or manifest has set the language of the pack, `check --write` writes nothing, says so and
+  exits `0`; the first `answer` sets the language. The language is never taken from the console.
 - `next.mjs [--count N] [--module X] [--depth ...]`: prints JSON
   `{ language, depth, module, done, remaining: { gate1, recommended, optional }, questions: [{ id, type, level, area, design, label, ask, help, example, choices: [{ id, label }], rules }] }`.
   Returns only questions whose status is `missing`, except that a non-empty `state.focus` returns exactly the focus ids whatever their status, in focus order. `tbd` and `partial` answers are handled in the finishing step, not re-asked. Works on an empty folder (no pack files yet: everything is `missing`). `remaining` counts missing questions in scope by effective level. Order: module order, gate1 questions before others within the depth. A round never crosses a module boundary: every returned question belongs to the same module (fewer than `count` when the module has fewer left), and `module` names it.
@@ -365,7 +386,7 @@ these `main` functions instead of starting processes.
 - `assets.mjs [--init] [--scan] [--add <file> --what <t> --owner <t> --rights <t> --restrictions <t>] [--from <file.json> [--delete]] [--remove <file>] [--json]`: `--init` creates `docs/assets/` (refuses links, idempotent); `--remove <file>` removes a row from the table without touching the file; `--from` takes `{ "rows": [ { "file", "what", "owner", "rights", "restrictions" } ] }` and avoids shell quoting problems on Windows, and needs a regular file of at most 2 MB (anything else exits `2`); `--scan` lists files in
   `docs/assets/` missing from the table, and separately the names that cannot be listed (section 5); `--add` appends or updates a row. A table that would exceed the section 4.4 limits is refused with exit `2` and nothing is written. `--init` is the only option that creates `docs/assets/`; `--from` and `--add` only list files that are already in the folder. A file name is matched without regard to how an accent is written (composed or decomposed) and the table gets the spelling the folder has. A name that is not valid UTF-8 cannot be listed: `check` and `assets --scan` show it with the bad bytes as `<0xHH>` (flag `assets.badName`) and nothing else stops because of it.
 - `pack.mjs [--out <dir>]`: runs the check, refreshes manifest and open questions, and writes `intake-pack-YYYY-MM-DD.zip`
-  (section 15). Refuses (exit `2`) only when the pack has no answer at all (an answer is a marker with content, or a deferred question; an empty `complete` or `partial` marker is not an answer). A failure to write the zip, a name that cannot go into a zip, and an exceeded size limit all exit `3`. A linked `docs/` or `docs/assets/` is refused with exit `3`. One shared rule (`isPackFile`) decides which files belong to a pack: the manifest and `pack` both use it; `pack` additionally keeps to the section 3 layout. Prints the zip's absolute path on its own line; with `--json` prints `{ zip, sha256, bytes, entries }`.
+  (section 15). Refuses (exit `2`) only when the pack has no answer at all (an answer is a marker with content, or a deferred question; an empty `complete` or `partial` marker is not an answer). A failure to write the zip, a name that cannot go into a zip, and an exceeded size limit all exit `3`. A linked `docs/` or `docs/assets/` is refused with exit `3`. `pack` exits `2`, not `3`, when `--out` is missing, is not a folder or lies inside `docs`. One shared rule (`isPackFile`) decides which files belong to a pack: the manifest and `pack` both use it; `pack` additionally keeps to the section 3 layout. Prints the zip's absolute path on its own line; with `--json` prints `{ zip, sha256, bytes, entries }`.
 
 ## 13. Installer and CLI (`bin/cli.mjs`, package bin `everything-mapped`)
 
@@ -377,7 +398,9 @@ everything-mapped version | help
 ```
 
 - Targets: `--claude` and/or `--codex`; without flags the installer detects the tools by scanning `PATH` (no process is started;
-  on Windows try `PATHEXT` variants: `.exe`, `.cmd`, `.bat`). If none is found and no flag is given it prints guidance and exits `2`.
+  on Windows the tools are looked for as `.exe`, `.cmd` and `.bat`, not by the whole `PATHEXT`). If none is found and no flag is given it prints guidance and exits `2`.
+  Messages are Danish with `--lang da`, otherwise when `LC_ALL` or `LANG` starts with `da` in any letter case, otherwise English; the CLI and the
+  scripts use the same function.
   If both are found and stdin is a TTY it asks; otherwise it installs both.
 - Scope: local (the default, or `--local`): `<dir>/.claude/skills/everything-mapped/` and `<dir>/.agents/skills/everything-mapped/`
   (`<dir>` defaults to the current directory). Global (`-g`, `--global`, alias `--user`): the same under `os.homedir()`.
@@ -405,8 +428,14 @@ everything-mapped version | help
   above the skill folder that the install created (`.claude` and `.claude/skills`, or the `.agents` pair), recorded in the install record
   as `ancestors`: deepest first, only when empty, never one that existed before, and only those two levels are ever accepted. A record
   without `ancestors` removes nothing above the skill folder.
-- **Backups.** During `--force` the old copy is kept in `<tool folder>/.everything-mapped-backup-*`, beside `skills/` (never inside it, so
-  no tool can load it as a skill). A backup left by a failed restore is named, not deleted, by every later install and uninstall.
+- **Staging and backups.** The new copy is built in `<tool folder>/.everything-mapped-staging-*`, beside `skills/`, with its install record,
+  checked file by file, and moved into place in one rename, so nothing half-built is ever inside `skills/`. With `--force` the old copy is moved
+  aside to `<tool folder>/.everything-mapped-backup-*` (also beside `skills/`, never inside it, so no tool can load it as a skill) after the new
+  one is built, and the backup is removed last. A backup that cannot be removed is named in a warning and the install still counts as complete
+  (exit `0`). When the person's own files stay in the skill folder, the staged files are moved in one by one: the record first, `SKILL.md` last.
+  A skill folder with nothing in it is free to install into. A folder without a record is neither replaced nor removed; the message tells the
+  person to delete it and run the install again. Staging folders and backups left by a stopped run are named by every later install and
+  uninstall (even a refused one), and are never used or deleted.
 - **Exit codes.** `0` ok; `2` usage error or a refusal that changed nothing; `3` a failure while reading or writing, including a script
   that cannot be started. Exit `1` belongs to `check --strict` only.
 - It never changes any other file (no global config, no `.gitignore`).
@@ -438,8 +467,12 @@ Every flag has a message `flag.<id>` in both languages, with `{params}`.
 | `assets.noRights` | warn | empty rights column |
 | `assets.rightsUnknown` | warn | rights column says `unknown` (or `ukendt`): allowed, but listed |
 | `assets.badName` | warn | a file in `docs/assets/` has a name that cannot be listed exactly (control or hidden character, U+2028/2029, backslash, space at either end, not valid UTF-8); the client renames it |
-| `assets.notPackable` | warn | the zip would refuse the file name (a character not allowed on every system, a name reserved on Windows, a name ending in a dot or a space, too long, differing only in case or accent from another file, or also the name of a folder); params `file`, `reasonCode`, `other` |
-| `text.hiddenCharacters` | warn | an existing answer, note, respondent or asset text holds a character from the refused list (section 4.4); it is flagged, not rewritten |
+| `assets.notPackable` | warn | the zip would refuse the file name (a character not allowed on every system, a name reserved on Windows, a name ending in a dot or a space, too long, differing only in case or accent from another file, or also the name of a folder), or the entry is not a plain file (`reasonCode: "notPlain"`: a link, socket or pipe); params `file`, `reasonCode`, `other` |
+| `text.hiddenCharacters` | warn | an existing answer, note, respondent or asset text holds a character from the refused list (section 4.4); it is flagged (answer files are not rewritten) |
+| `assets.tooLarge` | warn | params `file`, `size`, `limit`, `bytes`: an asset is over 500 MB; it is listed, never read and has no hash |
+| `assets.tooMany` | warn | params `count`, `limit`: more than 50,000 files in `docs/assets`; the first 50,000 in alphabetical order are listed |
+| `answer.notApplicable` | info | params `qid`, `controller`: a question that another answer switches off still has an answer; it is kept as written and not counted |
+| `pack.tooBig` | warn | params `entries`, `maxEntries`, `size`, `maxSize`, `bytes`, `maxBytes`: the pack would pass 5,000 files (about 10 layout files plus the assets) or 500 MB, and `pack` will stop |
 | `cross.languagesVsMultilingual` | warn | two or more languages in `D.languages` but `G.features` lacks `multilingual` |
 | `cross.redesignNoSite` | warn | `A.project-kind` is `redesign` but `A.existing-site` is empty |
 | `cross.assetsClaimedMissing` | warn | `B.assets-status` is `guidelines` or `partial` but `docs/assets/` is empty |
@@ -455,12 +488,17 @@ Every flag has a message `flag.<id>` in both languages, with `{params}`.
 - Entries are streamed. The zip is written to a hidden random temporary name and renamed when complete; only a file this call created is
   ever deleted. Files are opened without following links and without waiting, and must be regular files. An entry is stored, not deflated,
   when deflate would shrink it by more than 200 to 1 (so the receiving side's ratio cap is never exceeded).
+- At its start `pack` removes temporary files named `.intake-pack-YYYY-MM-DD.zip.<16 hex>.tmp` from the output folder when they are ordinary
+  files untouched for ten minutes, and names them in one line. If the kit's own text files cannot be read, `pack` prints the raw error and
+  exits `3`.
 - Before writing anything, `pack` lists every file that cannot go into the zip, with the reason (exit `3`): names that are not valid
   UTF-8, names equal ignoring case or accent form, a file with the same name as a folder, and the name rules below. Names print with
   `<U+XXXX>` markers. The size warning is based on the zip's own size (over 50 MB), not on the files before zipping.
 - Names: no path part over 255 bytes (UTF-8) and no path over 240 characters (refused before anything is read or written). No device
   names (CON, PRN, AUX, NUL, COM1-9, LPT1-9, also with the superscript digits, with or without an extension), none of `: < > " | ? *`,
   no trailing dot or space, no control, bidi or zero-width characters, and no two names that are the same ignoring case or accent form.
+  Two names are the same when they match after NFC, upper case (character by character, only where the upper case is one character) and
+  lower case; this also catches i and dotless i, s and long s, and the two sigmas. The sharp s and ss are different names.
 - Reading a zip is done by the team's own tooling, not by this repository (this repository only writes zips); the rules are listed here so both sides agree: reject any entry whose normalised name is absolute, has a `..` path segment, a drive letter or
   a NUL, or is a symlink; cap entries (5 000), total uncompressed size (500 MB) and the compression ratio (200:1). A name without the UTF-8
   flag is read as UTF-8 when it is ASCII or valid UTF-8; any other name is refused, not guessed. A folder entry is never created for a path

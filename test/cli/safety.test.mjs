@@ -7,7 +7,8 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
-import { copyTree, listTree } from '../../cli/copy.mjs';
+import { fillStaging, listTree } from '../../cli/copy.mjs';
+import { createStaging, placeStaging } from '../../cli/stage.mjs';
 import {
   RECORD_NAME,
   installedSnapshot,
@@ -246,23 +247,35 @@ test('--force never copies through a link inside the old install, even with a fo
   assert.deepEqual(snapshot(project), before, 'the refusal comes before anything is removed');
 });
 
-test('copyTree itself refuses a link or a file where a folder is needed (the plan check is not the only guard)', async (t) => {
+test('placing a staged copy refuses a link or a file where a folder is needed (the plan check is not the only guard)', async (t) => {
   const { base, source } = setup(t);
   const tree = listTree(source);
+  const stagedCopy = (folder) => {
+    fs.mkdirSync(folder, { recursive: true });
+    const stage = createStaging(folder);
+    fillStaging(tree, stage, folder);
+    return stage;
+  };
+
+  // A link where the copy needs the folder scripts, with a file of the person's in the skill folder.
   const outside = path.join(base, 'out3');
   fs.mkdirSync(outside);
-
   const throughLink = path.join(base, 'dest-link', '.claude', 'skills', 'everything-mapped');
-  fs.mkdirSync(throughLink, { recursive: true });
+  const stage = stagedCopy(throughLink);
+  writeFile(path.join(throughLink, 'my-notes.txt'), 'mine');
   if (!tryLinkFolder(outside, path.join(throughLink, 'scripts'))) return t.skip('links are not available here');
-  assert.throws(() => copyTree(tree, throughLink), (error) => error.key === 'ui.install.error.notRealFolder');
+  const before = snapshot(path.dirname(throughLink));
+  assert.throws(() => placeStaging(stage, throughLink), (error) => error.key === 'ui.install.error.notRealFolder');
   assert.deepEqual(snapshot(outside), {});
+  assert.deepEqual(snapshot(path.dirname(throughLink)), before, 'what was moved before the refusal is moved back out again');
 
-  const overFile = path.join(base, 'dest-file');
+  // A file where the copy needs the folder references.
+  const overFile = path.join(base, 'dest-file', '.claude', 'skills', 'everything-mapped');
+  const stage2 = stagedCopy(overFile);
   writeFile(path.join(overFile, 'references'), 'a file where a folder is needed');
-  assert.throws(() => copyTree(tree, overFile), (error) => error.key === 'ui.install.error.notRealFolder');
+  assert.throws(() => placeStaging(stage2, overFile), (error) => error.key === 'ui.install.error.notRealFolder');
   assert.equal(fs.readFileSync(path.join(overFile, 'references'), 'utf8'), 'a file where a folder is needed');
-  assert.deepEqual(Object.keys(snapshot(overFile)), ['references'], 'what the copy created is removed again');
+  assert.deepEqual(Object.keys(snapshot(overFile)), ['references']);
 });
 
 test('a forged folder entry in the record cannot remove an empty folder outside', async (t) => {
@@ -326,7 +339,7 @@ test('without an install record nothing is deleted, and the message explains why
     const result = await runCli([...args, '--dir', project], { sourceDir: source });
     assert.equal(result.code, 2, args.join(' '));
     assert.match(result.stderr, /no install record \(\.everything-mapped-install\.json\)/);
-    assert.match(result.stderr, /remove the folder yourself/);
+    assert.match(result.stderr, /delete the folder yourself/);
     assert.deepEqual(snapshot(project), before);
   }
 });

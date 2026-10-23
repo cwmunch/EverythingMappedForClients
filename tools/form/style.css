@@ -124,6 +124,13 @@ p {
   outline: none;
 }
 
+/* A message that takes the focus shows it: the person sees where the focus went. */
+.notice[tabindex="-1"]:focus,
+.sync[tabindex="-1"]:focus {
+  outline: 3px solid var(--focus);
+  outline-offset: 2px;
+}
+
 /* Top of the page */
 
 .top {

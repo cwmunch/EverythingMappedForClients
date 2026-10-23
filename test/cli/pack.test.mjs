@@ -399,7 +399,8 @@ test('a single file above 500 MB is refused before any file is read', { skip: !o
 
   const result = await runPack(['--root', root, '--out', out]);
   assert.equal(result.code, 3);
-  assert.match(result.stderr, /docs\/assets\/huge\.bin is 501 MB\. Files above 500 MB cannot be put in the pack/);
+  assert.match(result.stderr, /Some files cannot be put in the zip file/);
+  assert.ok(result.stderr.includes('- docs/assets/huge.bin: the file is 501 MB, which is above the limit of 500 MB'), result.stderr);
   assert.deepEqual(fs.readdirSync(out), []);
 });
 
@@ -708,4 +709,180 @@ test('file names are shown with <U+XXXX> markers everywhere, the same way check 
   assert.equal(result.code, 0, result.stderr);
   assert.ok(result.stdout.includes('Not put in the zip file: docs/other<U+001B>.txt'));
   assert.ok(!/[\u2400-\u243f]/.test(result.stdout), 'no control pictures: one display only');
+});
+
+// ---------------------------------------------------------------------------------------------
+// Temporary files of a stopped run, broken text files, and a name with a carriage return
+
+const MINUTE = 60 * 1000;
+
+function makeOld(file, minutesOld) {
+  const when = new Date(NOW.getTime() - minutesOld * MINUTE);
+  fs.utimesSync(file, when, when);
+}
+
+test('a pack sweeps the old temporary files of an earlier stopped run from the output folder, and nothing else', async (t) => {
+  const { base, root, out } = makePack(t);
+  const hex = '0123456789abcdef';
+  const stale = `.intake-pack-2026-10-22.zip.${hex}.tmp`;
+  const recent = `.intake-pack-2026-10-23.zip.${hex.split('').reverse().join('')}.tmp`;
+  const lookalikes = ['.intake-pack-2026-10-22.zip.keep.tmp', '.intake-pack-2026-10-22.zip.0123.tmp', 'intake-pack-2026-10-22.zip', '.other.zip.0123456789abcdef.tmp', `.intake-pack-2026-10-22.zip.${hex}.tmp.bak`, 'notes.tmp'];
+  for (const name of [stale, recent, ...lookalikes]) writeFile(path.join(out, name), 'x');
+  for (const name of [stale, ...lookalikes]) makeOld(path.join(out, name), 30);
+  makeOld(path.join(out, recent), 1);
+  // A folder and a link with our pattern are never touched, however old.
+  const folderLike = `.intake-pack-2026-10-21.zip.${hex}.tmp`;
+  fs.mkdirSync(path.join(out, folderLike));
+  makeOld(path.join(out, folderLike), 60);
+  const precious = path.join(base, 'precious.txt');
+  writeFile(precious, 'precious');
+  makeOld(precious, 60);
+  const linkLike = `.intake-pack-2026-10-20.zip.${hex}.tmp`;
+  const linked = trySymlink(precious, path.join(out, linkLike), 'file');
+
+  const result = await runPack(['--root', root, '--out', out]);
+  assert.equal(result.code, 0, result.stderr);
+
+  const left = fs.readdirSync(out);
+  assert.equal(left.includes(stale), false, 'the old temporary file is removed');
+  for (const name of [recent, folderLike, ...lookalikes]) assert.ok(left.includes(name), `${name} must stay`);
+  if (linked) assert.equal(fs.readFileSync(precious, 'utf8'), 'precious');
+  assert.ok(left.includes(ZIP_NAME));
+  const lines = result.stdout.split('\n').filter((line) => line.startsWith('Removed unfinished temporary files'));
+  assert.deepEqual(lines, [`Removed unfinished temporary files that an earlier run left in the output folder: ${stale}`], 'one line, naming what was removed');
+});
+
+test('nothing is swept, and nothing is said, when there is nothing to sweep', async (t) => {
+  const { root, out } = makePack(t);
+  const result = await runPack(['--root', root, '--out', out]);
+  assert.doesNotMatch(result.stdout, /Removed unfinished/);
+});
+
+test('--json names the swept files on stderr', async (t) => {
+  const { root, out } = makePack(t);
+  const stale = `.intake-pack-2026-10-22.zip.0123456789abcdef.tmp`;
+  writeFile(path.join(out, stale), 'x');
+  makeOld(path.join(out, stale), 30);
+  const result = await runPack(['--root', root, '--out', out, '--json']);
+  assert.equal(result.code, 0, result.stderr);
+  assert.match(result.stderr, new RegExp(`Removed unfinished temporary files .*: ${stale.replace(/\./g, '\\.')}`));
+  assert.doesNotThrow(() => JSON.parse(result.stdout));
+});
+
+test('broken text files of the kit give a plain message and exit 3, never a stack trace or exit 1', async (t) => {
+  const { base, root, out } = makePack(t);
+  const schemaDir = path.join(base, 'broken-kit-schema');
+  fs.cpSync(path.join(import.meta.dirname, '..', '..', 'skill', 'everything-mapped', 'schema'), schemaDir, { recursive: true });
+  fs.writeFileSync(path.join(schemaDir, 'ui-check.en.json'), '{ this is not json');
+
+  const out2 = [];
+  const err2 = [];
+  const code = await packMain(['--root', root, '--out', out], {
+    stdout: { write: (text) => out2.push(String(text)) },
+    stderr: { write: (text) => err2.push(String(text)) },
+    stdin: process.stdin,
+    env: { LANG: 'en_US.UTF-8' },
+    schemaDir,
+    now: () => NOW,
+  });
+  assert.equal(code, 3);
+  assert.match(err2.join(''), /Cannot read the text file .*ui-check\.en\.json/);
+  assert.doesNotMatch(err2.join(''), /\n\s+at /, 'no stack trace');
+  assert.deepEqual(fs.readdirSync(out), []);
+});
+
+test('a name with a carriage return (the macOS custom icon file) is listed with its <U+000D> marker and the reason', async (t) => {
+  const { root, out } = makePack(t);
+  try {
+    writeFile(path.join(root, 'docs', 'assets', 'Icon\r'), 'x');
+  } catch {
+    return t.skip('this file system does not allow a carriage return in a name');
+  }
+  const result = await runPack(['--root', root, '--out', out]);
+  assert.equal(result.code, 3);
+  assert.ok(result.stderr.includes('- docs/assets/Icon<U+000D>: the name contains a character that is not allowed on every system'), result.stderr);
+  assert.ok(!result.stderr.includes('\r'), 'no raw carriage return reaches the terminal');
+  assert.deepEqual(fs.readdirSync(out), []);
+});
+
+test('the unreadable-file text does not claim that nothing was written (the pack files were refreshed first)', () => {
+  for (const lang of ['en', 'da']) {
+    const texts = JSON.parse(fs.readFileSync(path.join(import.meta.dirname, '..', '..', 'skill', 'everything-mapped', 'schema', `ui-cli.${lang}.json`), 'utf8'));
+    assert.doesNotMatch(texts['ui.pack.error.zip.unreadableFile'], /Nothing was written|Der er ikke skrevet noget/);
+    assert.match(texts['ui.pack.error.zip.unreadableFile'], /No zip file was made|Der er ikke lavet nogen zip-fil/);
+  }
+});
+
+// ---------------------------------------------------------------------------------------------
+// The library's listing of the assets: everything that cannot be packed is listed once, before any write
+
+test('files over 500 MB, links and names that are not valid UTF-8 are listed together with their reasons (exit 3)', async (t) => {
+  const { base, root, out } = makePack(t);
+  const assets = path.join(root, 'docs', 'assets');
+  makeSparseFile(path.join(assets, 'big-one.bin'), 501 * MB);
+  makeSparseFile(path.join(assets, 'sub', 'big-two.bin'), 600 * MB);
+  const target = path.join(base, 'target.txt');
+  writeFile(target, 'x');
+  const linked = trySymlink(target, path.join(assets, 'link.txt'), 'file');
+  writeFile(path.join(assets, 'CON.txt'), 'x');
+  let invalidCreated = true;
+  try {
+    fs.writeFileSync(Buffer.concat([Buffer.from(`${assets}${path.sep}lat`), Buffer.from([0xe9]), Buffer.from('.png')]), 'x');
+  } catch {
+    invalidCreated = false;
+  }
+  const generated = ['intake-manifest.json', '07-risks-and-open-questions.md'].map((name) => path.join(root, 'docs', name));
+  const before = generated.map((file) => fs.readFileSync(file, 'utf8'));
+
+  const result = await runPack(['--root', root, '--out', out]);
+  assert.equal(result.code, 3, result.stderr);
+  const expected = [
+    '- docs/assets/big-one.bin: the file is 501 MB, which is above the limit of 500 MB',
+    '- docs/assets/sub/big-two.bin: the file is 600 MB, which is above the limit of 500 MB',
+    '- docs/assets/CON.txt: the name is reserved on Windows',
+  ];
+  if (linked) expected.push('- docs/assets/link.txt: it is not an ordinary file');
+  if (invalidCreated) expected.push('- docs/assets/lat<0xE9>.png: the name is not valid text');
+  for (const line of expected) assert.ok(result.stderr.split('\n').some((candidate) => candidate.startsWith(line)), `missing: ${line}`);
+  assert.equal(result.stderr.split('\n').filter((line) => line.includes('big-one.bin')).length, 1, 'every problem is listed once');
+  assert.deepEqual(fs.readdirSync(out), [], 'no zip and no temporary file');
+  assert.deepEqual(generated.map((file) => fs.readFileSync(file, 'utf8')), before, 'nothing in the pack was rewritten');
+});
+
+test('a pack with more files than the listing can name is refused at once, with the count (exit 3, nothing written)', async (t) => {
+  const { root, out } = makePack(t);
+  const assets = path.join(root, 'docs', 'assets', 'many');
+  fs.mkdirSync(assets);
+  for (let index = 0; index < 50001; index += 1) fs.closeSync(fs.openSync(path.join(assets, `f${index}.txt`), 'w'));
+  const manifest = path.join(root, 'docs', 'intake-manifest.json');
+  const before = fs.readFileSync(manifest, 'utf8');
+
+  const result = await runPack(['--root', root, '--out', out]);
+  assert.equal(result.code, 3);
+  assert.match(result.stderr, /The pack has 50003 files\. The limit is 5000\./);
+  assert.deepEqual(fs.readdirSync(out), []);
+  assert.equal(fs.readFileSync(manifest, 'utf8'), before);
+});
+
+test('the limits come from the library, so pack and the library cannot disagree', async () => {
+  const { MAX_ASSET_BYTES, MAX_PACK_BYTES, MAX_PACK_FILES } = await import('../../skill/everything-mapped/scripts/lib/util.mjs');
+  assert.equal(MAX_ASSET_BYTES, 500 * MB);
+  assert.equal(MAX_PACK_BYTES, 500 * MB);
+  assert.equal(MAX_PACK_FILES, 5000);
+  const source = fs.readFileSync(path.join(import.meta.dirname, '..', '..', 'skill', 'everything-mapped', 'scripts', 'pack.mjs'), 'utf8');
+  assert.doesNotMatch(source, /const MAX_(PACK_FILES|PACK_BYTES|FILE_BYTES) =/, 'no private copy of a limit');
+});
+
+test('a manifest with entries that have a size and no hash (files over the limit) does not trouble pack', async (t) => {
+  const { root, out } = makePack(t);
+  const manifestPath = path.join(root, 'docs', 'intake-manifest.json');
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  manifest.files.push({ path: 'docs/assets/long-gone-big.bin', size: 600 * MB, skipped: 'tooLarge' });
+  fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+
+  const result = await runPack(['--root', root, '--out', out]);
+  assert.equal(result.code, 0, result.stderr);
+  const entries = unzip(fs.readFileSync(path.join(out, ZIP_NAME)));
+  const packed = JSON.parse(entries.get('docs/intake-manifest.json').data.toString('utf8'));
+  assert.ok(packed.files.every((file) => file.sha256 || file.skipped), 'every entry has a hash or says why not');
 });

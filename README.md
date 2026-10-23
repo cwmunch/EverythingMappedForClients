@@ -54,6 +54,7 @@ Before you start, read the one-page [guide](docs/GUIDE.en.md). It lists what to 
 
 - It copies one folder, the interviewer, into your project folder: `.claude/skills/everything-mapped/` for Claude Code and `.agents/skills/everything-mapped/` for Codex. If it finds both tools, it asks which one to use, but only in an interactive terminal. Otherwise it installs both.
 - It prints every path before it writes anything, and the SHA-256 checksum of every file after it has written them.
+- It builds the new copy in a folder next to `skills/` and moves it in whole when it is complete, so an install that is stopped half way never leaves a half-built interviewer that your AI tool could load. If a run was stopped, a folder named `.everything-mapped-staging-...` or `.everything-mapped-backup-...` may be left in `.claude` or `.agents`. The installer names it the next time and never deletes it.
 - It stops if the interviewer is already installed there. Add `--force` to replace it. `--force` replaces only the files the installer wrote. If you have changed one of them, or put something of your own where a file or folder must go, it stops, names the file and changes nothing.
 
 **What it does not do:**
@@ -126,6 +127,8 @@ If you do not use Claude Code or Codex, use the form instead. It is one file in 
 The form cannot ask follow-up questions the way the interviewer can, so add a little extra detail to your answers.
 
 When you open the form from a file on your computer, it does not keep your answers unless you tick the box "Keep my answers in this browser". Other pages opened from your computer could read and change answers kept that way, so tick it only on a computer you trust. If you do not tick it, download your answers or the zip before you close the tab; the browser warns you if there are answers you have not saved or downloaded.
+
+If you put the form on a web site for others to use, give it its own address (a separate sub-domain), because answers kept in the browser can be read by every page on the same web site. Also send the header `Content-Security-Policy: frame-ancestors 'none'` with the file, because a page cannot set that rule for itself.
 
 ## What you get
 
@@ -251,6 +254,7 @@ Læs den korte [vejledning](docs/GUIDE.da.md), før du går i gang. Den viser, h
 
 - Det kopierer én mappe, intervieweren, ind i din projektmappe: `.claude/skills/everything-mapped/` til Claude Code og `.agents/skills/everything-mapped/` til Codex. Finder det begge værktøjer, spørger det, hvilket du vil bruge, men kun i en interaktiv terminal. Ellers installerer det til begge.
 - Det viser hver sti, før det skriver noget, og SHA-256-kontrolsummen for hver fil, når filerne er skrevet.
+- Det bygger den nye kopi i en mappe ved siden af `skills/` og flytter den ind som en helhed, når den er færdig. En installation, der bliver stoppet undervejs, efterlader derfor aldrig en halvbygget interviewer, som dit AI-værktøj kan indlæse. Er en kørsel blevet stoppet, kan der ligge en mappe med navnet `.everything-mapped-staging-...` eller `.everything-mapped-backup-...` i `.claude` eller `.agents`. Installationsprogrammet nævner den næste gang og sletter den aldrig.
 - Det stopper, hvis intervieweren allerede er installeret der. Tilføj `--force` for at erstatte den. `--force` erstatter kun de filer, installationsprogrammet har skrevet. Har du ændret en af dem, eller lagt noget af dit eget, hvor en fil eller mappe skal ligge, så stopper det, nævner filen og ændrer ikke noget.
 
 **Det gør installationsprogrammet ikke:**
@@ -323,6 +327,8 @@ Bruger du ikke Claude Code eller Codex, kan du bruge formularen i stedet. Den er
 Formularen kan ikke stille opfølgende spørgsmål, sådan som intervieweren kan, så skriv gerne lidt mere i dine svar.
 
 Når du åbner formularen fra en fil på din computer, gemmer den ikke dine svar, medmindre du sætter hak i feltet "Behold mine svar i denne browser". Andre sider, der åbnes fra din computer, kan læse og ændre svar, der er gemt på den måde, så sæt kun hak på en computer, du stoler på. Sætter du ikke hak, så hent dine svar eller zip-filen, før du lukker fanen; browseren advarer dig, hvis der er svar, du ikke har gemt eller hentet.
+
+Lægger du formularen på et websted, som andre skal bruge, så giv den sin egen adresse (et separat underdomæne), fordi svar, der er gemt i browseren, kan læses af alle sider på det samme websted. Send også headeren `Content-Security-Policy: frame-ancestors 'none'` med filen, fordi en side ikke selv kan sætte den regel.
 
 ## Indholdet af mappen
 

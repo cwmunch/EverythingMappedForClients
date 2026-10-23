@@ -99,7 +99,7 @@ export function makeIo({ stdin = '', tty = false, onStdout = () => {} } = {}) {
 }
 
 // Runs the real command line entry with a controlled environment.
-// options: cwd, env, sourceDir, platform, stdin, tty, loadScript, onStdout
+// options: cwd, env, sourceDir, platform, stdin, tty, loadScript, hooks, onStdout
 export async function runCli(args, options = {}) {
   const { io, stdout, stderr } = makeIo(options);
   const context = {
@@ -110,6 +110,7 @@ export async function runCli(args, options = {}) {
   };
   if (options.sourceDir) context.sourceDir = options.sourceDir;
   if (options.loadScript) context.loadScript = options.loadScript;
+  if (options.hooks) context.hooks = options.hooks;
   const code = await main(args, io, context);
   return { code, stdout: stdout(), stderr: stderr() };
 }

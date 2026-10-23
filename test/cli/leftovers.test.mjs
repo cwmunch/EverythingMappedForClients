@@ -208,7 +208,7 @@ test('a stale backup is named by the next install and uninstall, never deleted, 
 
   const refused = await run(['install', '--claude']);
   assert.equal(refused.code, 2);
-  assert.ok(refused.stdout.includes(`A backup from an earlier failed install is still here: ${stale}`), 'named even when the install is refused');
+  assert.ok(refused.stdout.includes(`A backup of an old copy is still here: ${stale}`), 'named even when the install is refused');
 
   const forced = await run(['install', '--claude', '--force']);
   assert.equal(forced.code, 0, forced.stderr);

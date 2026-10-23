@@ -189,3 +189,10 @@ test('the setup block and every file field shrink to a phone of 320 px instead o
   assert.match(block(code, '\n.finish {'), /grid-template-columns:\s*minmax\(0, 1fr\)/);
   assert.match(block(code, '\n.layout {'), /grid-template-columns:\s*minmax\(0, 1fr\)/);
 });
+
+test('a message that takes the focus shows a focus ring, though headings that are focused by code do not', () => {
+  const ring = block(code, '.notice[tabindex="-1"]:focus');
+  assert.match(ring, /outline:\s*3px solid var\(--focus\)/);
+  assert.match(block(code, '.sync[tabindex="-1"]:focus'), /outline:\s*3px solid var\(--focus\)/);
+  assert.match(block(code, '\n[tabindex="-1"]:focus {'), /outline:\s*none/, 'headings and the main area still show none');
+});

@@ -179,16 +179,17 @@ test('"Remove it" deletes what an earlier visit saved, and the page keeps nothin
   assert.equal(savedText(storage), null);
 });
 
-test('saved answers that cannot be read are put aside when the person continues, as when a page starts', () => {
+test('saved answers that cannot be read are not written anywhere when the person continues, and stay until they are removed', () => {
   const storage = createMemoryStorage();
-  storage.setItem(KEY, '{"format":"everything-mapped-form/1","answers":"broken');
+  const damaged = '{"format":"everything-mapped-form/1","answers":"broken';
+  storage.setItem(KEY, damaged);
   const page = openForm({ language: 'en', storage, protocol: 'file:' });
   assert.equal(page.app.syncMode, 'offer');
   buttonByText(banner(page), text('en', 'ui.form.offer.continue')).click();
-  assert.equal(page.app.refs.top.alert.textContent, text('en', 'ui.form.save.broken'));
-  assert.equal(savedText(storage), null);
-  assert.ok(storage.getItem(`${KEY}.broken`));
-  assert.ok(hasButton(page.root, text('en', 'ui.form.privacy.downloadBroken')));
+  assert.equal(page.app.refs.top.alert.textContent, text('en', 'ui.form.offer.unreadable'));
+  assert.equal(savedText(storage), damaged, 'the data is where it was');
+  assert.equal(storage.getItem(`${KEY}.broken`), null, 'no copy is written on a page that keeps nothing');
+  assert.ok(hasButton(page.root, text('en', 'ui.form.privacy.downloadBroken')), 'but it can be downloaded');
   assert.equal(page.app.keep, false);
 });
 
@@ -473,9 +474,7 @@ test('"Keep what is in this window" overwrites the stored answers, on purpose', 
 });
 
 test('a window with nothing typed since it last read the answers just follows the other window', () => {
-  const { storage, first, second } = openTwo({ language: 'en' });
-  answerGoal(first, GOAL);
-  first.fake.runTimers();
+  const { storage, first, second } = openedAfterSave();
   typeInto(part(first, 'A.budget').focus(), '150.000 kr.');
   first.fake.runTimers();
   const focused = second.doc.activeElement;
@@ -492,13 +491,13 @@ test('a window with nothing typed since it last read the answers just follows th
 });
 
 test('moving about the form is not a change: such a window still follows the other one', () => {
-  const { first, second } = openTwo({ language: 'en' });
+  const { first, second } = openedAfterSave();
   second.app.showModule('B', { focus: false });
-  answerGoal(first, GOAL);
+  typeInto(part(first, 'A.budget').focus(), '10');
   first.fake.runTimers();
   tellOthers(second);
   assert.equal(second.app.conflict, false);
-  assert.equal(second.app.state.answers['A.goal'].text, GOAL);
+  assert.equal(second.app.state.answers['A.budget'].text, '10');
 });
 
 test('an open window notices at once when another window saves, without typing', () => {
@@ -517,13 +516,13 @@ test('an open window notices at once when another window saves, without typing',
 });
 
 test('a storage event about another key, or from a window that wrote nothing new, changes nothing', () => {
-  const { storage, first, second } = openTwo({ language: 'en' });
-  answerGoal(first, GOAL);
+  const { storage, first, second } = openedAfterSave();
+  typeInto(part(first, 'A.budget').focus(), '10');
   first.fake.runTimers();
   second.fake.fire('storage', { key: 'something.else' });
-  assert.equal(second.app.state.answers['A.goal'], undefined, 'not even looked at');
+  assert.equal(second.app.state.answers['A.budget'], undefined, 'not even looked at');
   tellOthers(second);
-  assert.equal(second.app.state.answers['A.goal'].text, GOAL);
+  assert.equal(second.app.state.answers['A.budget'].text, '10');
   const before = second.app.state;
   tellOthers(second);
   assert.ok(second.app.state === before, 'the window has the copy that is stored');
@@ -636,8 +635,10 @@ test('"Show the other window\'s answers" keeps the files this window has attache
   await until(() => second.app.state.assets.length === 1, 'the file');
   second.fake.runTimers();
   assert.equal(saved(storage).assets[0].name, 'logo.svg');
-  // The first window follows (it has nothing typed), then saves one more answer.
+  // The first window (it has read no copy yet) is asked, takes the other copy on a click, then saves one more answer.
   tellOthers(first);
+  assert.equal(first.app.syncMode, 'changed');
+  buttonByText(banner(first), text('en', 'ui.form.sync.show')).click();
   assert.equal(first.app.state.assets[0].data, null, 'the stored copy has no content');
   answerGoal(first, GOAL);
   first.fake.runTimers();
@@ -650,7 +651,7 @@ test('"Show the other window\'s answers" keeps the files this window has attache
   assert.equal(Buffer.from(second.app.state.assets[0].data).toString(), LOGO_SVG, 'the file this window has stays attached');
 });
 
-test('a window that was not keeping answers does not write over what is stored: it follows or asks', () => {
+test('a window that was not keeping answers does not write over what is stored: it asks, with or without something typed', () => {
   const storage = storageWithCopy();
   const later = openForm({ language: 'en', storage, protocol: 'file:' });
   assert.equal(later.app.keep, false);
@@ -661,8 +662,10 @@ test('a window that was not keeping answers does not write over what is stored: 
 
   const untouched = openForm({ language: 'en', storage, protocol: 'file:' });
   tick(keepBox(untouched), true);
-  assert.equal(untouched.app.syncMode, null, 'with nothing typed, ticking the box takes the saved answers');
-  assert.equal(untouched.app.state.answers['A.goal'].text, GOAL);
+  assert.equal(untouched.app.syncMode, 'changed', 'ticking the box does not read answers nobody asked to read: the person chooses');
+  assert.equal(untouched.app.state.answers['A.goal'], undefined);
+  buttonByText(banner(untouched), text('en', 'ui.form.sync.show')).click();
+  assert.equal(untouched.app.state.answers['A.goal'].text, GOAL, 'after the click they are read');
   assert.equal(untouched.app.keep, true);
 });
 
@@ -711,7 +714,7 @@ function tryLeaving(page) {
   return prevented;
 }
 
-test('a page that keeps nothing asks before it is left while answers are not saved or downloaded', async () => {
+test('a page that keeps nothing asks before it is left while answers are not saved in a file', async () => {
   const page = openForm({ language: 'en', storage: createMemoryStorage(), protocol: 'file:' });
   assert.equal(page.fake.listenerCount('beforeunload'), 0, 'nothing answered, nothing at risk');
   assert.equal(tryLeaving(page), false);
@@ -723,7 +726,9 @@ test('a page that keeps nothing asks before it is left while answers are not sav
   page.app.navItems.get('finish').button.click();
   page.app.refs.finish.download.click();
   await until(() => page.doc.downloads.length === 1, 'the download');
-  assert.equal(page.fake.listenerCount('beforeunload'), 0, 'a pack that holds the answers: nothing at risk');
+  assert.equal(tryLeaving(page), true, 'a pack cannot be opened here again, so it does not make the answers safe');
+  await page.app.exportData();
+  assert.equal(page.fake.listenerCount('beforeunload'), 0, 'form data in a file can');
   assert.equal(tryLeaving(page), false);
   page.app.showModule('A', {});
   page.fake.runTimers();
@@ -731,7 +736,7 @@ test('a page that keeps nothing asks before it is left while answers are not sav
 
   typeInto(part(page, 'A.budget').focus(), '10');
   page.fake.runTimers();
-  assert.equal(page.fake.listenerCount('beforeunload'), 1, 'a change after the download');
+  assert.equal(page.fake.listenerCount('beforeunload'), 1, 'a change after the file was saved');
   assert.equal(tryLeaving(page), true);
 });
 
