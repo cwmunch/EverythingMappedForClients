@@ -1,0 +1,7 @@
+node_modules/
+.DS_Store
+Thumbs.db
+*.log
+intake-pack-*.zip
+.everything-mapped-assets.json
+intake-answers.json

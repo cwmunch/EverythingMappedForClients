@@ -1,0 +1,1051 @@
+{
+ "schema": "everything-mapped-for-clients/1",
+ "languages": [
+  "da",
+  "en"
+ ],
+ "levels": [
+  "gate1",
+  "recommended",
+  "optional"
+ ],
+ "depths": {
+  "essentials": [
+   "gate1"
+  ],
+  "standard": [
+   "gate1",
+   "recommended"
+  ],
+  "full": [
+   "gate1",
+   "recommended",
+   "optional"
+  ]
+ },
+ "weights": {
+  "gate1": 3,
+  "recommended": 2,
+  "optional": 1
+ },
+ "statusScores": {
+  "complete": 1,
+  "partial": 0.5,
+  "tbd": 0,
+  "missing": 0
+ },
+ "areas": [
+  "business",
+  "brand",
+  "design",
+  "audience",
+  "market",
+  "content",
+  "scope",
+  "technical",
+  "legal",
+  "working"
+ ],
+ "types": [
+  "text",
+  "longtext",
+  "choice",
+  "multichoice",
+  "list",
+  "urllist",
+  "date",
+  "files"
+ ],
+ "moduleOrder": [
+  "A",
+  "B",
+  "C",
+  "D",
+  "E",
+  "F",
+  "G",
+  "H",
+  "I",
+  "J"
+ ],
+ "files": [
+  {
+   "id": "brief",
+   "path": "docs/00-brief.md",
+   "modules": [
+    "A",
+    "J"
+   ]
+  },
+  {
+   "id": "brand",
+   "path": "docs/01-brand/brand.md",
+   "modules": [
+    "B"
+   ]
+  },
+  {
+   "id": "audience",
+   "path": "docs/02-audience-and-competitors.md",
+   "modules": [
+    "D",
+    "E"
+   ]
+  },
+  {
+   "id": "content",
+   "path": "docs/03-content-inventory.md",
+   "modules": [
+    "C",
+    "F"
+   ]
+  },
+  {
+   "id": "scope",
+   "path": "docs/04-scope-and-structure.md",
+   "modules": [
+    "G",
+    "H"
+   ]
+  },
+  {
+   "id": "technical",
+   "path": "docs/05-technical-and-compliance.md",
+   "modules": [
+    "I"
+   ]
+  }
+ ],
+ "generatedFiles": {
+  "openQuestions": "docs/07-risks-and-open-questions.md",
+  "assets": "docs/assets.md",
+  "assetsDir": "docs/assets",
+  "manifest": "docs/intake-manifest.json",
+  "state": "docs/intake-state.json"
+ },
+ "modules": [
+  {
+   "id": "A",
+   "key": "business",
+   "file": "brief",
+   "questions": [
+    {
+     "id": "A.business",
+     "type": "longtext",
+     "level": "gate1",
+     "area": "business",
+     "rules": {
+      "minChars": 60
+     }
+    },
+    {
+     "id": "A.project-kind",
+     "type": "choice",
+     "level": "gate1",
+     "area": "business",
+     "choices": [
+      "new-site",
+      "redesign",
+      "landing-page",
+      "small-app",
+      "other"
+     ]
+    },
+    {
+     "id": "A.existing-site",
+     "type": "urllist",
+     "level": "recommended",
+     "area": "business",
+     "showIf": {
+      "id": "A.project-kind",
+      "in": [
+       "redesign",
+       "other"
+      ]
+     }
+    },
+    {
+     "id": "A.why-now",
+     "type": "longtext",
+     "level": "gate1",
+     "area": "business",
+     "rules": {
+      "minChars": 40
+     }
+    },
+    {
+     "id": "A.goal",
+     "type": "longtext",
+     "level": "gate1",
+     "area": "business",
+     "rules": {
+      "minChars": 40
+     }
+    },
+    {
+     "id": "A.metrics",
+     "type": "list",
+     "level": "gate1",
+     "area": "business",
+     "rules": {
+      "minItems": 1
+     }
+    },
+    {
+     "id": "A.deadline",
+     "type": "date",
+     "level": "gate1",
+     "area": "business"
+    },
+    {
+     "id": "A.deadline-reason",
+     "type": "longtext",
+     "level": "recommended",
+     "area": "business"
+    },
+    {
+     "id": "A.budget",
+     "type": "text",
+     "level": "recommended",
+     "area": "business"
+    },
+    {
+     "id": "A.stakeholders",
+     "type": "list",
+     "level": "gate1",
+     "area": "business",
+     "rules": {
+      "minItems": 1
+     }
+    },
+    {
+     "id": "A.failure",
+     "type": "longtext",
+     "level": "optional",
+     "area": "business"
+    }
+   ]
+  },
+  {
+   "id": "B",
+   "key": "brand",
+   "file": "brand",
+   "questions": [
+    {
+     "id": "B.name",
+     "type": "text",
+     "level": "gate1",
+     "area": "brand"
+    },
+    {
+     "id": "B.name-meaning",
+     "type": "longtext",
+     "level": "recommended",
+     "area": "brand"
+    },
+    {
+     "id": "B.purpose",
+     "type": "longtext",
+     "level": "gate1",
+     "area": "brand",
+     "rules": {
+      "minChars": 40
+     }
+    },
+    {
+     "id": "B.values",
+     "type": "list",
+     "level": "recommended",
+     "area": "brand",
+     "rules": {
+      "minItems": 3
+     }
+    },
+    {
+     "id": "B.personality",
+     "type": "list",
+     "level": "gate1",
+     "area": "brand",
+     "rules": {
+      "minItems": 5
+     }
+    },
+    {
+     "id": "B.not-personality",
+     "type": "list",
+     "level": "recommended",
+     "area": "brand",
+     "rules": {
+      "minItems": 3
+     }
+    },
+    {
+     "id": "B.voice-samples",
+     "type": "urllist",
+     "level": "gate1",
+     "area": "brand",
+     "rules": {
+      "minItems": 1
+     }
+    },
+    {
+     "id": "B.voice-avoid",
+     "type": "list",
+     "level": "recommended",
+     "area": "brand"
+    },
+    {
+     "id": "B.assets-status",
+     "type": "choice",
+     "level": "gate1",
+     "area": "brand",
+     "choices": [
+      "guidelines",
+      "partial",
+      "none"
+     ]
+    },
+    {
+     "id": "B.logo",
+     "type": "files",
+     "level": "recommended",
+     "area": "brand",
+     "design": true,
+     "requiredIf": {
+      "id": "B.assets-status",
+      "in": [
+       "guidelines",
+       "partial"
+      ],
+      "level": "gate1"
+     }
+    },
+    {
+     "id": "B.fonts",
+     "type": "text",
+     "level": "recommended",
+     "area": "brand",
+     "design": true
+    },
+    {
+     "id": "B.colors",
+     "type": "text",
+     "level": "recommended",
+     "area": "brand",
+     "design": true
+    },
+    {
+     "id": "B.guidelines",
+     "type": "urllist",
+     "level": "optional",
+     "area": "brand"
+    },
+    {
+     "id": "B.non-negotiables",
+     "type": "longtext",
+     "level": "recommended",
+     "area": "brand"
+    },
+    {
+     "id": "B.admired",
+     "type": "urllist",
+     "level": "recommended",
+     "area": "brand",
+     "design": true
+    },
+    {
+     "id": "B.never-resemble",
+     "type": "urllist",
+     "level": "recommended",
+     "area": "brand",
+     "design": true
+    },
+    {
+     "id": "B.story",
+     "type": "longtext",
+     "level": "optional",
+     "area": "brand"
+    },
+    {
+     "id": "B.tension",
+     "type": "longtext",
+     "level": "optional",
+     "area": "brand"
+    }
+   ]
+  },
+  {
+   "id": "C",
+   "key": "products",
+   "file": "content",
+   "questions": [
+    {
+     "id": "C.offers",
+     "type": "list",
+     "level": "gate1",
+     "area": "content",
+     "rules": {
+      "minItems": 1
+     }
+    },
+    {
+     "id": "C.hero-offer",
+     "type": "text",
+     "level": "gate1",
+     "area": "content"
+    },
+    {
+     "id": "C.pricing",
+     "type": "longtext",
+     "level": "recommended",
+     "area": "content"
+    },
+    {
+     "id": "C.catalogue-size",
+     "type": "choice",
+     "level": "recommended",
+     "area": "content",
+     "choices": [
+      "under-10",
+      "10-100",
+      "over-100",
+      "none"
+     ]
+    },
+    {
+     "id": "C.change-rate",
+     "type": "choice",
+     "level": "recommended",
+     "area": "content",
+     "choices": [
+      "rarely",
+      "monthly",
+      "weekly",
+      "daily"
+     ]
+    },
+    {
+     "id": "C.seasonality",
+     "type": "text",
+     "level": "optional",
+     "area": "content"
+    },
+    {
+     "id": "C.proof",
+     "type": "list",
+     "level": "gate1",
+     "area": "content",
+     "rules": {
+      "minItems": 1
+     }
+    },
+    {
+     "id": "C.advantage",
+     "type": "longtext",
+     "level": "gate1",
+     "area": "content",
+     "rules": {
+      "minChars": 40
+     }
+    },
+    {
+     "id": "C.fulfilment",
+     "type": "text",
+     "level": "optional",
+     "area": "content"
+    }
+   ]
+  },
+  {
+   "id": "D",
+   "key": "audience",
+   "file": "audience",
+   "questions": [
+    {
+     "id": "D.segments",
+     "type": "list",
+     "level": "gate1",
+     "area": "audience",
+     "rules": {
+      "minItems": 1
+     }
+    },
+    {
+     "id": "D.jobs",
+     "type": "list",
+     "level": "gate1",
+     "area": "audience",
+     "rules": {
+      "minItems": 1
+     }
+    },
+    {
+     "id": "D.questions",
+     "type": "list",
+     "level": "gate1",
+     "area": "audience",
+     "rules": {
+      "minItems": 3
+     }
+    },
+    {
+     "id": "D.objections",
+     "type": "list",
+     "level": "recommended",
+     "area": "audience"
+    },
+    {
+     "id": "D.channels",
+     "type": "multichoice",
+     "level": "recommended",
+     "area": "audience",
+     "choices": [
+      "search",
+      "social",
+      "referral",
+      "ads",
+      "email",
+      "offline",
+      "partners",
+      "other"
+     ]
+    },
+    {
+     "id": "D.devices",
+     "type": "choice",
+     "level": "recommended",
+     "area": "audience",
+     "choices": [
+      "mobile",
+      "desktop",
+      "mixed",
+      "unknown"
+     ]
+    },
+    {
+     "id": "D.languages",
+     "type": "multichoice",
+     "level": "gate1",
+     "area": "audience",
+     "choices": [
+      "da",
+      "en",
+      "de",
+      "sv",
+      "no",
+      "other"
+     ]
+    },
+    {
+     "id": "D.access",
+     "type": "longtext",
+     "level": "recommended",
+     "area": "audience"
+    },
+    {
+     "id": "D.action",
+     "type": "list",
+     "level": "gate1",
+     "area": "audience",
+     "rules": {
+      "minItems": 1
+     }
+    },
+    {
+     "id": "D.customer-voice",
+     "type": "longtext",
+     "level": "optional",
+     "area": "audience"
+    }
+   ]
+  },
+  {
+   "id": "E",
+   "key": "market",
+   "file": "audience",
+   "questions": [
+    {
+     "id": "E.competitors",
+     "type": "urllist",
+     "level": "gate1",
+     "area": "market",
+     "rules": {
+      "minItems": 3
+     }
+    },
+    {
+     "id": "E.gap",
+     "type": "longtext",
+     "level": "recommended",
+     "area": "market"
+    },
+    {
+     "id": "E.like",
+     "type": "urllist",
+     "level": "gate1",
+     "area": "design",
+     "design": true,
+     "rules": {
+      "minItems": 3
+     }
+    },
+    {
+     "id": "E.dislike",
+     "type": "urllist",
+     "level": "gate1",
+     "area": "design",
+     "design": true,
+     "rules": {
+      "minItems": 2
+     }
+    },
+    {
+     "id": "E.feel",
+     "type": "list",
+     "level": "gate1",
+     "area": "design",
+     "design": true,
+     "rules": {
+      "minItems": 5
+     }
+    },
+    {
+     "id": "E.not-feel",
+     "type": "list",
+     "level": "recommended",
+     "area": "design",
+     "design": true,
+     "rules": {
+      "minItems": 3
+     }
+    },
+    {
+     "id": "E.imagery",
+     "type": "multichoice",
+     "level": "recommended",
+     "area": "design",
+     "design": true,
+     "choices": [
+      "photos-people",
+      "photos-product",
+      "photos-place",
+      "illustration",
+      "abstract",
+      "video",
+      "none"
+     ]
+    },
+    {
+     "id": "E.density",
+     "type": "choice",
+     "level": "optional",
+     "area": "design",
+     "design": true,
+     "choices": [
+      "calm",
+      "balanced",
+      "dense"
+     ]
+    },
+    {
+     "id": "E.design-musts",
+     "type": "longtext",
+     "level": "optional",
+     "area": "design",
+     "design": true
+    }
+   ]
+  },
+  {
+   "id": "F",
+   "key": "content-assets",
+   "file": "content",
+   "questions": [
+    {
+     "id": "F.existing-content",
+     "type": "multichoice",
+     "level": "gate1",
+     "area": "content",
+     "choices": [
+      "texts",
+      "photos",
+      "video",
+      "testimonials",
+      "documents",
+      "none"
+     ]
+    },
+    {
+     "id": "F.photos",
+     "type": "choice",
+     "level": "gate1",
+     "area": "design",
+     "design": true,
+     "choices": [
+      "professional",
+      "some",
+      "none",
+      "unknown"
+     ]
+    },
+    {
+     "id": "F.copywriter",
+     "type": "choice",
+     "level": "gate1",
+     "area": "content",
+     "choices": [
+      "client",
+      "team",
+      "mixed",
+      "undecided"
+     ]
+    },
+    {
+     "id": "F.volume",
+     "type": "text",
+     "level": "recommended",
+     "area": "content"
+    },
+    {
+     "id": "F.migration",
+     "type": "longtext",
+     "level": "recommended",
+     "area": "content",
+     "requiredIf": {
+      "id": "A.project-kind",
+      "in": [
+       "redesign"
+      ],
+      "level": "gate1"
+     }
+    },
+    {
+     "id": "F.rights",
+     "type": "longtext",
+     "level": "gate1",
+     "area": "content"
+    },
+    {
+     "id": "F.sensitive",
+     "type": "text",
+     "level": "optional",
+     "area": "content"
+    }
+   ]
+  },
+  {
+   "id": "G",
+   "key": "scope",
+   "file": "scope",
+   "questions": [
+    {
+     "id": "G.pages",
+     "type": "list",
+     "level": "gate1",
+     "area": "scope",
+     "rules": {
+      "minItems": 1
+     }
+    },
+    {
+     "id": "G.features",
+     "type": "multichoice",
+     "level": "gate1",
+     "area": "scope",
+     "choices": [
+      "contact-form",
+      "booking",
+      "shop",
+      "search",
+      "blog",
+      "members",
+      "multilingual",
+      "calculator",
+      "map",
+      "newsletter",
+      "gallery",
+      "other"
+     ]
+    },
+    {
+     "id": "G.integrations",
+     "type": "list",
+     "level": "recommended",
+     "area": "scope"
+    },
+    {
+     "id": "G.out-of-scope",
+     "type": "list",
+     "level": "gate1",
+     "area": "scope",
+     "rules": {
+      "minItems": 1
+     }
+    },
+    {
+     "id": "G.priorities",
+     "type": "list",
+     "level": "recommended",
+     "area": "scope"
+    },
+    {
+     "id": "G.multilingual",
+     "type": "choice",
+     "level": "recommended",
+     "area": "scope",
+     "choices": [
+      "same-structure",
+      "separate-content",
+      "unsure"
+     ],
+     "requiredIf": {
+      "id": "D.languages",
+      "minSelected": 2,
+      "level": "gate1"
+     }
+    },
+    {
+     "id": "G.content-types",
+     "type": "list",
+     "level": "optional",
+     "area": "scope"
+    }
+   ]
+  },
+  {
+   "id": "H",
+   "key": "editing",
+   "file": "scope",
+   "questions": [
+    {
+     "id": "H.editing-needs",
+     "type": "choice",
+     "level": "gate1",
+     "area": "scope",
+     "choices": [
+      "nobody",
+      "occasional",
+      "regular",
+      "restructure"
+     ]
+    },
+    {
+     "id": "H.who-edits",
+     "type": "longtext",
+     "level": "recommended",
+     "area": "scope",
+     "requiredIf": {
+      "id": "H.editing-needs",
+      "notIn": [
+       "nobody"
+      ],
+      "level": "gate1"
+     }
+    },
+    {
+     "id": "H.approval",
+     "type": "text",
+     "level": "optional",
+     "area": "scope"
+    },
+    {
+     "id": "H.roles",
+     "type": "list",
+     "level": "optional",
+     "area": "scope"
+    },
+    {
+     "id": "H.preview",
+     "type": "choice",
+     "level": "optional",
+     "area": "scope",
+     "choices": [
+      "yes",
+      "no",
+      "unsure"
+     ]
+    },
+    {
+     "id": "H.maintenance",
+     "type": "choice",
+     "level": "recommended",
+     "area": "scope",
+     "choices": [
+      "client",
+      "team",
+      "agency",
+      "none",
+      "undecided"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "I",
+   "key": "technical",
+   "file": "technical",
+   "questions": [
+    {
+     "id": "I.domain",
+     "type": "text",
+     "level": "gate1",
+     "area": "technical"
+    },
+    {
+     "id": "I.dns-contact",
+     "type": "text",
+     "level": "recommended",
+     "area": "technical"
+    },
+    {
+     "id": "I.hosting",
+     "type": "text",
+     "level": "recommended",
+     "area": "technical"
+    },
+    {
+     "id": "I.existing-stack",
+     "type": "text",
+     "level": "optional",
+     "area": "technical"
+    },
+    {
+     "id": "I.personal-data",
+     "type": "choice",
+     "level": "gate1",
+     "area": "legal",
+     "choices": [
+      "none",
+      "contact-forms",
+      "accounts",
+      "payments",
+      "other"
+     ]
+    },
+    {
+     "id": "I.cookies-analytics",
+     "type": "choice",
+     "level": "recommended",
+     "area": "legal",
+     "choices": [
+      "none",
+      "privacy-friendly",
+      "standard",
+      "undecided"
+     ]
+    },
+    {
+     "id": "I.legal-pages",
+     "type": "multichoice",
+     "level": "recommended",
+     "area": "legal",
+     "choices": [
+      "privacy",
+      "cookies",
+      "terms",
+      "imprint",
+      "accessibility-statement",
+      "none",
+      "unsure"
+     ]
+    },
+    {
+     "id": "I.regulation",
+     "type": "text",
+     "level": "optional",
+     "area": "legal"
+    },
+    {
+     "id": "I.accessibility",
+     "type": "choice",
+     "level": "recommended",
+     "area": "technical",
+     "choices": [
+      "aa-default",
+      "public-sector",
+      "higher",
+      "unsure"
+     ]
+    },
+    {
+     "id": "I.seo",
+     "type": "longtext",
+     "level": "recommended",
+     "area": "technical"
+    },
+    {
+     "id": "I.performance",
+     "type": "text",
+     "level": "optional",
+     "area": "technical"
+    },
+    {
+     "id": "I.browsers",
+     "type": "text",
+     "level": "optional",
+     "area": "technical"
+    },
+    {
+     "id": "I.data-location",
+     "type": "choice",
+     "level": "optional",
+     "area": "legal",
+     "choices": [
+      "eu",
+      "any",
+      "specific"
+     ]
+    },
+    {
+     "id": "I.email",
+     "type": "text",
+     "level": "optional",
+     "area": "technical"
+    }
+   ]
+  },
+  {
+   "id": "J",
+   "key": "working",
+   "file": "brief",
+   "questions": [
+    {
+     "id": "J.contact",
+     "type": "text",
+     "level": "gate1",
+     "area": "working"
+    },
+    {
+     "id": "J.availability",
+     "type": "text",
+     "level": "recommended",
+     "area": "working"
+    },
+    {
+     "id": "J.feedback",
+     "type": "text",
+     "level": "recommended",
+     "area": "working"
+    },
+    {
+     "id": "J.accounts",
+     "type": "text",
+     "level": "recommended",
+     "area": "working"
+    },
+    {
+     "id": "J.concerns",
+     "type": "longtext",
+     "level": "optional",
+     "area": "working"
+    },
+    {
+     "id": "J.anything-else",
+     "type": "longtext",
+     "level": "optional",
+     "area": "working"
+    }
+   ]
+  }
+ ]
+}

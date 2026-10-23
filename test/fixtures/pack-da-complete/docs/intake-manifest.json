@@ -1,0 +1,137 @@
+{
+  "schema": "everything-mapped-for-clients/1",
+  "toolVersion": "1.0.0",
+  "language": "da",
+  "depth": "full",
+  "project": {
+    "name": "Nordlys Cykler",
+    "kind": "redesign"
+  },
+  "respondents": [
+    {
+      "name": "Mette Holm",
+      "role": "Ejer",
+      "updated": "2026-10-23"
+    }
+  ],
+  "createdAt": "2026-10-23T10:00:00Z",
+  "updatedAt": "2026-10-23T10:00:00Z",
+  "completeness": {
+    "overall": 1,
+    "gate1Ready": true,
+    "gate1Blocking": [],
+    "counts": {
+      "complete": 97,
+      "partial": 0,
+      "tbd": 0,
+      "missing": 0,
+      "skipped": 0
+    },
+    "byFile": {
+      "brief": {
+        "score": 1,
+        "total": 17
+      },
+      "brand": {
+        "score": 1,
+        "total": 18
+      },
+      "audience": {
+        "score": 1,
+        "total": 19
+      },
+      "content": {
+        "score": 1,
+        "total": 16
+      },
+      "scope": {
+        "score": 1,
+        "total": 13
+      },
+      "technical": {
+        "score": 1,
+        "total": 14
+      }
+    },
+    "byModule": {
+      "A": {
+        "score": 1,
+        "total": 11
+      },
+      "B": {
+        "score": 1,
+        "total": 18
+      },
+      "C": {
+        "score": 1,
+        "total": 9
+      },
+      "D": {
+        "score": 1,
+        "total": 10
+      },
+      "E": {
+        "score": 1,
+        "total": 9
+      },
+      "F": {
+        "score": 1,
+        "total": 7
+      },
+      "G": {
+        "score": 1,
+        "total": 7
+      },
+      "H": {
+        "score": 1,
+        "total": 6
+      },
+      "I": {
+        "score": 1,
+        "total": 14
+      },
+      "J": {
+        "score": 1,
+        "total": 6
+      }
+    }
+  },
+  "files": [
+    {
+      "path": "docs/00-brief.md",
+      "sha256": "652df708b7695982ec0752aea4ecbdc35b8b1ef166d56b7c17cf671f74d76b72"
+    },
+    {
+      "path": "docs/01-brand/brand.md",
+      "sha256": "d451e72a9b599ce3b6965d3d15eb0d8fde4cdf2ac5871a78f641c63c099e473a"
+    },
+    {
+      "path": "docs/02-audience-and-competitors.md",
+      "sha256": "cb308689d96707fe711d4d3335153a4a66e4a80bebc5a22f028a3709dd9b9397"
+    },
+    {
+      "path": "docs/03-content-inventory.md",
+      "sha256": "14743e334c97420955f9a7c8c12fd4cb81700f9d2f2bd52781dc8ac72d254e1c"
+    },
+    {
+      "path": "docs/04-scope-and-structure.md",
+      "sha256": "c72c0d109d6360b6676f38786f359e8148266f126f6e2a1de1e0b261fa4ff44f"
+    },
+    {
+      "path": "docs/05-technical-and-compliance.md",
+      "sha256": "c36d96cb29c8ee9ee545975160a42cb429a03947eeb187742d18635477d64ad8"
+    },
+    {
+      "path": "docs/07-risks-and-open-questions.md",
+      "sha256": "b2e6531c61f31746616c5bfa5f5c1a925ea78d5ffcb18251a7d48c95a93012de"
+    },
+    {
+      "path": "docs/assets.md",
+      "sha256": "27e99f87e5e2a5cfaca2602260c391ff988690964a0b0e7bc0a6157db1205b08"
+    },
+    {
+      "path": "docs/assets/logo.svg",
+      "sha256": "7d8583b3c4edef9fc3a081531f8b47874828a7e2e9e7bc26c8b4371ed996e07d"
+    }
+  ]
+}

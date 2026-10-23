@@ -1,0 +1,23 @@
+{
+  "language": "en",
+  "depth": "standard",
+  "respondent": { "name": "Sam Reed", "role": "Operations" },
+  "recipient": "Priya Shah",
+  "answers": [
+    { "id": "A.business", "status": "complete", "text": "Harbour Bakery is a family bakery with two shops in Aarhus. We bake bread, pastries and cakes every morning and take orders for events." },
+    { "id": "A.project-kind", "status": "complete", "choice": ["new-site"] },
+    { "id": "A.why-now", "status": "partial", "text": "We want more event orders.\nMissing: what changed this year." },
+    { "id": "A.goal", "status": "complete", "text": "More event orders through the website, so that we do not turn people away in December." },
+    { "id": "A.metrics", "status": "complete", "items": [{ "text": "Event orders per month", "note": "now 6" }] },
+    { "id": "A.deadline", "status": "complete", "date": "2026-09-01" },
+    { "id": "A.stakeholders", "status": "tbd", "owner": "client", "due": "2026-11-05", "note": "Check with the owners" },
+    { "id": "B.name", "status": "complete", "text": "Harbour Bakery" },
+    { "id": "B.purpose", "status": "complete", "text": "Fresh bread every day." },
+    { "id": "B.assets-status", "status": "complete", "choice": ["guidelines"] },
+    { "id": "C.offers", "status": "complete", "items": [{ "text": "Bread" }, { "text": "Cakes for events", "note": "Order three days ahead" }] },
+    { "id": "D.languages", "status": "complete", "choice": ["da", "en"] },
+    { "id": "E.like", "status": "partial", "items": [{ "text": "https://example.com/calm-site", "note": "Big photos" }, { "text": "https://example.org/warm-site" }] },
+    { "id": "I.domain", "status": "tbd", "owner": "client", "due": "2026-11-05", "note": "Ask IT" },
+    { "id": "I.hosting", "status": "tbd", "note": "Not sure" }
+  ]
+}

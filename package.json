@@ -1,0 +1,44 @@
+{
+  "name": "everything-mapped-for-clients",
+  "version": "1.0.0",
+  "description": "A guided intake that maps everything a web or app project needs to know. Danish or English.",
+  "type": "module",
+  "bin": {
+    "everything-mapped": "bin/cli.mjs"
+  },
+  "files": [
+    "bin",
+    "cli",
+    "skill",
+    "docs",
+    "README.md",
+    "CHANGELOG.md"
+  ],
+  "engines": {
+    "node": ">=22.2.0"
+  },
+  "scripts": {
+    "test": "node --test"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/cwmunch/EverythingMappedForClients.git"
+  },
+  "bugs": {
+    "url": "https://github.com/cwmunch/EverythingMappedForClients/issues"
+  },
+  "homepage": "https://github.com/cwmunch/EverythingMappedForClients#readme",
+  "keywords": [
+    "intake",
+    "discovery",
+    "briefing",
+    "questionnaire",
+    "web-project",
+    "client-onboarding",
+    "claude-code",
+    "codex",
+    "agent-skill",
+    "danish"
+  ],
+  "author": "cwmunch"
+}

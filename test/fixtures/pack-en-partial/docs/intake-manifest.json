@@ -1,0 +1,163 @@
+{
+  "schema": "everything-mapped-for-clients/1",
+  "toolVersion": "1.0.0",
+  "language": "en",
+  "depth": "standard",
+  "project": {
+    "name": "Harbour Bakery",
+    "kind": "new-site"
+  },
+  "respondents": [
+    {
+      "name": "Sam Reed",
+      "role": "Operations",
+      "updated": "2026-10-23"
+    }
+  ],
+  "createdAt": "2026-10-23T10:00:00Z",
+  "updatedAt": "2026-10-23T10:00:00Z",
+  "completeness": {
+    "overall": 0.1694,
+    "gate1Ready": false,
+    "gate1Blocking": [
+      "A.why-now",
+      "A.stakeholders",
+      "B.purpose",
+      "B.personality",
+      "B.voice-samples",
+      "B.logo",
+      "C.hero-offer",
+      "C.proof",
+      "C.advantage",
+      "D.segments",
+      "D.jobs",
+      "D.questions",
+      "D.action",
+      "E.competitors",
+      "E.like",
+      "E.dislike",
+      "E.feel",
+      "F.existing-content",
+      "F.photos",
+      "F.copywriter",
+      "F.rights",
+      "G.pages",
+      "G.features",
+      "G.out-of-scope",
+      "G.multilingual",
+      "H.editing-needs",
+      "I.domain",
+      "I.personal-data",
+      "J.contact"
+    ],
+    "counts": {
+      "complete": 9,
+      "partial": 3,
+      "tbd": 3,
+      "missing": 59,
+      "skipped": 1
+    },
+    "byFile": {
+      "brief": {
+        "score": 0.4853,
+        "total": 13
+      },
+      "brand": {
+        "score": 0.2083,
+        "total": 15
+      },
+      "audience": {
+        "score": 0.1098,
+        "total": 16
+      },
+      "content": {
+        "score": 0.0882,
+        "total": 13
+      },
+      "scope": {
+        "score": 0,
+        "total": 9
+      },
+      "technical": {
+        "score": 0,
+        "total": 8
+      }
+    },
+    "byModule": {
+      "A": {
+        "score": 0.66,
+        "total": 9
+      },
+      "B": {
+        "score": 0.2083,
+        "total": 15
+      },
+      "C": {
+        "score": 0.1667,
+        "total": 7
+      },
+      "D": {
+        "score": 0.1304,
+        "total": 9
+      },
+      "E": {
+        "score": 0.0833,
+        "total": 7
+      },
+      "F": {
+        "score": 0,
+        "total": 6
+      },
+      "G": {
+        "score": 0,
+        "total": 6
+      },
+      "H": {
+        "score": 0,
+        "total": 3
+      },
+      "I": {
+        "score": 0,
+        "total": 8
+      },
+      "J": {
+        "score": 0,
+        "total": 4
+      }
+    }
+  },
+  "files": [
+    {
+      "path": "docs/00-brief.md",
+      "sha256": "d020f12e5e9e5767c1d5652e26a17fe3c619d89aa3c602bcfdd0aa6a58b17e3b"
+    },
+    {
+      "path": "docs/01-brand/brand.md",
+      "sha256": "828d9e84b3e607623aeee395d494ef6b50976f93532615b8d132afd1e7a82026"
+    },
+    {
+      "path": "docs/02-audience-and-competitors.md",
+      "sha256": "a1f16b0e6c1c4cfa6002b88ba6921edaf5df2706f79b30df95567aa40f956ef2"
+    },
+    {
+      "path": "docs/03-content-inventory.md",
+      "sha256": "e467ab908886f25b229a5d9d44e0c9769e3306615e1366db526d664c524bd171"
+    },
+    {
+      "path": "docs/04-scope-and-structure.md",
+      "sha256": "100365aba49af86a7814960f5502a2a05fe98a3d927a592d223cf92e577fc20a"
+    },
+    {
+      "path": "docs/05-technical-and-compliance.md",
+      "sha256": "e5d96be74c5b1b3ad059effea67d1097e4247486d496b471ed43200cb2d7a2cb"
+    },
+    {
+      "path": "docs/07-risks-and-open-questions.md",
+      "sha256": "ce40bb357ba072041bb4ab224fb6733fa5b93ab5179ffc481a856f6068bd0b54"
+    },
+    {
+      "path": "docs/assets.md",
+      "sha256": "f49f03416651611ef2126bbbe1111eccf5490181a243336f6281e3103b490f08"
+    }
+  ]
+}
