@@ -24,3 +24,4 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Static form (`docs/form/index.html`) that runs in a browser without an account or internet connection and makes the same pack.
 - README and client guides in Danish and English.
 - No dependencies. Runs on Node.js 22.2 or newer on Linux, Windows and macOS.
+- MIT licence.

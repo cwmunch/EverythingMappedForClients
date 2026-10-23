@@ -39,9 +39,12 @@ test('no dependencies, no lifecycle scripts, only a test script', () => {
   assert.ok(!fs.existsSync(path.join(REPO_ROOT, 'binding.gyp')), 'a binding.gyp would trigger an implicit install script');
 });
 
-test('the package is not private and has no license field yet', () => {
+test('the package is not private and is MIT licensed, with the licence file in place', () => {
   assert.equal(Object.hasOwn(pkg, 'private'), false);
-  assert.equal(Object.hasOwn(pkg, 'license'), false);
+  assert.equal(pkg.license, 'MIT');
+  const text = fs.readFileSync(path.join(REPO_ROOT, 'LICENSE'), 'utf8');
+  assert.match(text, /^MIT License\n/);
+  assert.match(text, /^Copyright \(c\) \d{4} cwmunch$/m);
 });
 
 test('the code under bin and cli uses no child_process, eval or network module', () => {

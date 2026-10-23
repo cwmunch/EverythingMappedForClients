@@ -191,6 +191,7 @@ Replace the address with your own. You can also use the static form, which needs
 - Run the tests with `node --test` in the repository root. There is nothing to install: the kit uses only the Node.js standard library.
 - The CLI also has `next`, `answer` and `assets`, which the interviewer uses, plus `version` and `help`.
 - Changes are listed in [CHANGELOG.md](CHANGELOG.md).
+- Licence: [MIT](LICENSE).
 
 ---
 
@@ -387,3 +388,4 @@ Erstat adressen med jeres egen. Du kan også bruge formularen i browseren, som i
 - Kør testene med `node --test` i roden af repositoriet. Der skal ikke installeres noget: Kittet bruger kun standardbiblioteket i Node.js.
 - CLI'en har også `next`, `answer` og `assets`, som intervieweren bruger, samt `version` og `help`.
 - Ændringer står i [CHANGELOG.md](CHANGELOG.md).
+- Licens: [MIT](LICENSE).

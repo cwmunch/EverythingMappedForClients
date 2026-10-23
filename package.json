@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "description": "A guided intake that maps everything a web or app project needs to know. Danish or English.",
   "type": "module",
+  "license": "MIT",
   "bin": {
     "everything-mapped": "bin/cli.mjs"
   },
