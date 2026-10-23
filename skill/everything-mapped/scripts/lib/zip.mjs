@@ -9,7 +9,8 @@
 // from a file in chunks. `name` uses forward slashes and is relative ("docs/00-brief.md").
 // `data` is a Buffer, a Uint8Array or a string (written as UTF-8). Entries are written sorted by
 // name, so the same input always gives the same bytes. Each file is deflated, or stored when
-// deflate would not make it smaller. Names are flagged as UTF-8 (bit 11).
+// deflate would not make it smaller or would shrink it by more than 200 to 1 (the tools that open
+// the zip refuse an entry above that ratio, so one is never written). Names are flagged as UTF-8 (bit 11).
 //
 // Times: an entry's own `date`, else options.date, else now. The DOS time has no time zone;
 // the UTC fields of the date are stored, so the same date gives the same bytes on every computer.
@@ -25,12 +26,16 @@ import path from 'node:path';
 import { Readable, Transform, Writable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import zlib from 'node:zlib';
+import { openRegularFile } from './manifest.mjs';
+import { MAX_NAME_CHARACTERS, MAX_NAME_PART_BYTES, foldPackName, nameProblems } from './util.mjs';
 
 export const MAX_ENTRIES = 0xffff;
 export const MAX_BYTES = 0xffffffff;
-// The tools that open the zip refuse longer names (FORMAT.md section 15).
-export const MAX_NAME_PART_BYTES = 255;
-export const MAX_NAME_CHARACTERS = 240;
+// An entry whose deflated size times this is smaller than its size is stored instead (decided per entry).
+export const MAX_COMPRESSION_RATIO = 200;
+// The tools that open the zip refuse longer names (FORMAT.md section 15). The rule for a name is in
+// util.mjs (nameProblems), where the pack checks and the form use it too.
+export { MAX_NAME_CHARACTERS, MAX_NAME_PART_BYTES };
 
 const LOCAL_HEADER_SIGNATURE = 0x04034b50;
 const CENTRAL_HEADER_SIGNATURE = 0x02014b50;
@@ -46,7 +51,7 @@ const READ_CHUNK_BYTES = 256 * 1024;
 const TEMPORARY_ATTEMPTS = 8;
 
 // code is one of: needsNewerNode, badInput, badName, nameTooLong, duplicateName, tooManyEntries,
-// tooLarge, packTooLarge, fileChanged.
+// tooLarge, packTooLarge, fileChanged, unreadableFile.
 export class ZipError extends Error {
   constructor(code, message, params = {}) {
     super(message);
@@ -56,73 +61,40 @@ export class ZipError extends Error {
   }
 }
 
-// Windows treats these names as devices, with or without an extension (nul.png is the device too).
-// The superscript digits (code points 185, 178, 179) are reserved as well.
-const DEVICE_NAMES = /^(?:CON|PRN|AUX|NUL|CONIN\$|CONOUT\$|COM[1-9\xb9\xb2\xb3]|LPT[1-9\xb9\xb2\xb3])$/;
-
-// Characters that may not appear in a name, as code point ranges: control characters (also the C1
-// range), and the invisible characters that make a name look like another one: bidi marks,
-// overrides and isolates, zero-width characters, the line and paragraph separators and the byte order mark.
-const FORBIDDEN_RANGES = [
-  [0x00, 0x1f],
-  [0x7f, 0x9f],
-  [0x61c, 0x61c],
-  [0x180e, 0x180e],
-  [0x200b, 0x200f],
-  [0x2028, 0x202e],
-  [0x2060, 0x2064],
-  [0x2066, 0x2069],
-  [0xfeff, 0xfeff],
-];
-// Characters Windows cannot store in a file name.
-const WINDOWS_FORBIDDEN = '<>:"|?*';
-
-function hasForbiddenCharacter(name) {
-  for (const character of name) {
-    const code = character.codePointAt(0);
-    if (WINDOWS_FORBIDDEN.includes(character)) return true;
-    if (FORBIDDEN_RANGES.some(([first, last]) => code >= first && code <= last)) return true;
-  }
-  return false;
-}
-
-function isDeviceName(segment) {
-  const base = segment.split('.')[0].trimEnd();
-  return DEVICE_NAMES.test(base.toUpperCase());
-}
+// The messages for the reasons nameProblems gives. The reasons that are about length are
+// nameTooLong errors.
+const NAME_MESSAGES = {
+  empty: 'the name is empty',
+  notText: 'the name is not valid text',
+  backslash: 'use forward slashes',
+  notRelative: 'the name must be relative',
+  forbiddenCharacter: 'control characters, invisible characters and the characters < > : " | ? * are not allowed',
+  emptyPart: 'empty folder name or trailing slash',
+  dotPart: '"." and ".." are not allowed',
+  endsWithDotOrSpace: 'a name may not end with a dot or a space',
+  deviceName: 'the name is reserved on Windows',
+};
 
 // Names must work on Linux, macOS and Windows, must not be able to land outside the folder the
 // zip is unpacked into, and must be short enough for the tools that open the zip.
 export function checkName(name) {
-  const fail = (reason) => new ZipError('badName', `Invalid zip entry name ${JSON.stringify(name)}: ${reason}`, { name });
-  const tooLong = (reason) => new ZipError('nameTooLong', `Zip entry name ${JSON.stringify(name)} is too long: ${reason}`, {
-    name,
-    partBytes: MAX_NAME_PART_BYTES,
-    characters: MAX_NAME_CHARACTERS,
-  });
-  if (typeof name !== 'string' || name === '') throw fail('the name is empty');
-  if (!name.isWellFormed()) throw fail('the name is not valid text');
-  if (name.includes('\\')) throw fail('use forward slashes');
-  if (name.startsWith('/') || /^[A-Za-z]:/.test(name)) throw fail('the name must be relative');
-  if (hasForbiddenCharacter(name)) {
-    throw fail('control characters, invisible characters and the characters < > : " | ? * are not allowed');
+  const [problem] = nameProblems(name);
+  if (problem && problem.code === 'partTooLong') {
+    throw new ZipError('nameTooLong', `Zip entry name ${JSON.stringify(name)} is too long: a part is longer than ${MAX_NAME_PART_BYTES} bytes`, {
+      name,
+      partBytes: MAX_NAME_PART_BYTES,
+      characters: MAX_NAME_CHARACTERS,
+    });
   }
-  for (const segment of name.split('/')) {
-    if (segment === '') throw fail('empty folder name or trailing slash');
-    if (segment === '.' || segment === '..') throw fail('"." and ".." are not allowed');
-    if (/[. ]$/.test(segment)) throw fail('a name may not end with a dot or a space');
-    if (isDeviceName(segment)) throw fail('the name is reserved on Windows');
-    if (Buffer.byteLength(segment, 'utf8') > MAX_NAME_PART_BYTES) {
-      throw tooLong(`a part is longer than ${MAX_NAME_PART_BYTES} bytes`);
-    }
+  if (problem && problem.code === 'pathTooLong') {
+    throw new ZipError('nameTooLong', `Zip entry name ${JSON.stringify(name)} is too long: the path is longer than ${MAX_NAME_CHARACTERS} characters`, {
+      name,
+      partBytes: MAX_NAME_PART_BYTES,
+      characters: MAX_NAME_CHARACTERS,
+    });
   }
-  if ([...name].length > MAX_NAME_CHARACTERS) throw tooLong(`the path is longer than ${MAX_NAME_CHARACTERS} characters`);
+  if (problem) throw new ZipError('badName', `Invalid zip entry name ${JSON.stringify(name)}: ${NAME_MESSAGES[problem.code]}`, { name });
   return Buffer.from(name, 'utf8');
-}
-
-// Two names that differ only in case (or in how an accent is written) are one file on Windows and macOS.
-function foldName(name) {
-  return name.normalize('NFC').toLowerCase();
 }
 
 function toBuffer(data, name) {
@@ -162,7 +134,7 @@ export function checkEntries(entries, defaultDate = new Date()) {
   const seen = new Map();
   const checked = entries.map((entry) => {
     const nameBytes = checkName(entry.name);
-    const folded = foldName(entry.name);
+    const folded = foldPackName(entry.name);
     if (seen.has(folded)) {
       const other = seen.get(folded);
       throw new ZipError('duplicateName', `The names ${JSON.stringify(other)} and ${JSON.stringify(entry.name)} are the same or differ only in case`, {
@@ -228,6 +200,14 @@ function endRecord(count, centralSize, centralOffset) {
   return record;
 }
 
+// An entry must fit the 32-bit sizes of a zip without zip64. (A function of the size alone, so a test can
+// check the limit with a number instead of a 4 GiB buffer.)
+export function assertEntryFits(size, name) {
+  if (size > MAX_BYTES) {
+    throw new ZipError('tooLarge', `${JSON.stringify(name)} is larger than 4 GiB, which needs zip64`, { name });
+  }
+}
+
 function assertFits(total) {
   if (total > MAX_BYTES) {
     throw new ZipError('tooLarge', 'The zip file would be larger than 4 GiB, which needs zip64', { max: MAX_BYTES });
@@ -237,14 +217,18 @@ function assertFits(total) {
 // ---------------------------------------------------------------------------------------------
 // In memory
 
+// Deflate is used when it makes the entry smaller, but not when it would shrink it by more than
+// MAX_COMPRESSION_RATIO to 1.
+function worthDeflating(size, deflatedSize) {
+  return deflatedSize < size && size <= deflatedSize * MAX_COMPRESSION_RATIO;
+}
+
 // Compresses one entry in memory. Returns the record the headers need plus the bytes to store.
 function compressInMemory({ entry, nameBytes, dos }) {
   const data = toBuffer(entry.data, entry.name);
-  if (data.length > MAX_BYTES) {
-    throw new ZipError('tooLarge', `${JSON.stringify(entry.name)} is larger than 4 GiB, which needs zip64`, { name: entry.name });
-  }
+  assertEntryFits(data.length, entry.name);
   const deflated = data.length === 0 ? data : zlib.deflateRawSync(data, { level: 9 });
-  const useDeflate = deflated.length < data.length;
+  const useDeflate = worthDeflating(data.length, deflated.length);
   const body = useDeflate ? deflated : data;
   return {
     nameBytes,
@@ -382,8 +366,10 @@ class Measure extends Transform {
   _transform(chunk, encoding, callback) {
     this.size += chunk.length;
     this.crc = zlib.crc32(chunk, this.crc);
-    if (this.size > MAX_BYTES) {
-      callback(new ZipError('tooLarge', `${JSON.stringify(this.entryName)} is larger than 4 GiB, which needs zip64`, { name: this.entryName }));
+    try {
+      assertEntryFits(this.size, this.entryName);
+    } catch (error) {
+      callback(error);
       return;
     }
     if (this.budget) {
@@ -397,13 +383,25 @@ class Measure extends Transform {
   }
 }
 
+// A stream of the content of an entry. A file is opened without following a link and without waiting
+// for a pipe, and must be a regular file, so a file swapped for a link or a pipe after the names were
+// checked is refused (naming it) instead of followed or waited for.
 function openContent(entry) {
-  if (typeof entry.path === 'string') return fs.createReadStream(entry.path, { highWaterMark: READ_CHUNK_BYTES });
-  return Readable.from([toBuffer(entry.data, entry.name)], { objectMode: false });
+  if (typeof entry.path !== 'string') return Readable.from([toBuffer(entry.data, entry.name)], { objectMode: false });
+  let fd;
+  try {
+    fd = openRegularFile(entry.path);
+  } catch (error) {
+    throw new ZipError('unreadableFile', `${JSON.stringify(entry.name)} is a link, is not an ordinary file, or cannot be read (${error.code ?? error.message})`, {
+      name: entry.name,
+      path: entry.path,
+    });
+  }
+  return fs.createReadStream(null, { fd, highWaterMark: READ_CHUNK_BYTES });
 }
 
 // Streams one entry into the file at `start`: a placeholder header, the content (deflated, or stored
-// when deflate does not make it smaller), then the real header over the placeholder.
+// when deflate does not make it smaller or shrinks it past the ratio limit), then the real header over the placeholder.
 // Returns the record for the central directory.
 async function streamEntry(fd, item, start, budget) {
   const { entry, nameBytes, dos } = item;
@@ -417,7 +415,7 @@ async function streamEntry(fd, item, start, budget) {
   record.crc = measure.crc;
   record.size = measure.size;
 
-  if (measure.size > 0 && sink.bytes < measure.size) {
+  if (measure.size > 0 && worthDeflating(measure.size, sink.bytes)) {
     record.compressedSize = sink.bytes;
   } else {
     fs.ftruncateSync(fd, dataStart);

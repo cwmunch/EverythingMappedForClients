@@ -175,8 +175,17 @@ test('the review step has one column that may shrink, and long names and address
   assert.match(block(code, '\n.finish-block {'), /min-width:\s*0/);
 });
 
-test('the notice about another window stays in view while the page scrolls, and hides like everything hidden', () => {
-  assert.match(block(code, '\n.sync {'), /position:\s*sticky/);
-  assert.match(block(code, '\n.sync {'), /top:\s*0/);
+test('the notice about another window stays in view on a wide screen only, and hides like everything hidden', () => {
+  assert.doesNotMatch(block(code, '\n.sync {'), /position:\s*sticky/, 'on a phone it would cover a third of the screen: it stays where it is and takes the focus');
+  const wide = block(code, '@media (min-width: 40rem)');
+  assert.match(block(wide, '.sync {'), /position:\s*sticky/);
+  assert.match(block(wide, '.sync {'), /top:\s*0/);
   assert.ok(/\[hidden\]\s*\{[^}]*display:\s*none\s*!important/.test(code), 'the hidden attribute wins over display');
+});
+
+test('the setup block and every file field shrink to a phone of 320 px instead of widening the page', () => {
+  assert.match(block(code, '\n.setup {'), /grid-template-columns:\s*minmax\(0, 1fr\)/, 'the single column of the setup block may shrink');
+  assert.match(block(code, 'input[type="file"]'), /max-width:\s*100%/);
+  assert.match(block(code, '\n.finish {'), /grid-template-columns:\s*minmax\(0, 1fr\)/);
+  assert.match(block(code, '\n.layout {'), /grid-template-columns:\s*minmax\(0, 1fr\)/);
 });

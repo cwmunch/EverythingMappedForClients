@@ -147,9 +147,10 @@ Fields by `type`: `text` and `longtext` use `text`; `list`, `urllist` and `files
 optional `note`; for `files` the text is `assets/<file name>`); `choice` and `multichoice` use `choice` (ids, never
 labels) and an optional `note`; `date` uses `date` (`YYYY-MM-DD`) and an optional `note`. A `tbd` answer needs only
 `owner`, `due` and `note`. Leave out `recipient` or `notes` when you have nothing new for them. Never start a line of
-an answer with `#`: headings inside an answer are dropped the next time answers are saved, so turn any headings the
-person gives you (for example from a pasted document) into plain lines. The script prints `gate1`, `overall` and
-`next`; do not read these out to the person.
+an answer with `#`: headings inside an answer are shown one level lower when answers are saved, so turn any headings the
+person gives you (for example from a pasted document) into plain lines. When you change an earlier answer that other
+questions depend on, send those dependent questions with status `missing` in the same input; answer refuses otherwise
+and names them. The script prints `gate1`, `overall` and `next`; do not read these out to the person.
 
 ## 5. Files: logos, photos, fonts, documents
 
@@ -160,7 +161,9 @@ When files come up:
    enough; they keep their originals.
 2. When they say it is done, run `node "<skill-dir>/scripts/assets.mjs" --root . --lang <lang> --scan --json`. If the
    result lists names under "names cannot be listed" (for example a file name with a hidden character), ask the person
-   to rename that file in the folder and run `--scan` again; do not list it yourself.
+   to rename that file in the folder and run `--scan` again; do not list it yourself. Warnings about names
+   (`assets.badName`, `assets.notPackable`, or a name shown with `<0xHH>` bytes) always mean the person has to rename
+   the file. `--add` and `--from` only list files that are already in the folder.
 3. For each new file, ask what it is, who owns it, what rights there are to use it (for example "we own it" or
    "licensed"), and any restrictions. If they do not know the rights, write `unknown` (Danish pack: `ukendt`); that
    is allowed, and the file shows up among the open items at the end. One file at a time; a set of similar files

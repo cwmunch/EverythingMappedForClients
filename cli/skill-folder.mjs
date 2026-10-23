@@ -203,11 +203,35 @@ function ignoreMissing(action) {
   }
 }
 
+// Removes the folders above the skill folder that the install created (they were recorded), deepest
+// first, when they are empty. A folder that existed before the install is not in the record, and one
+// that holds anything else is left. Returns the folders removed.
+function removeEmptyAncestors(baseDir, skillFolder, ancestors) {
+  // Only the two folders above this skill folder can be ours, whatever a record says.
+  const toolFolder = path.basename(path.dirname(path.dirname(skillFolder)));
+  const allowed = new Set([toolFolder, `${toolFolder}/skills`]);
+  const removed = [];
+  const deepestFirst = ancestors.filter((relative) => allowed.has(relative)).sort((a, b) => b.split('/').length - a.split('/').length);
+  for (const relative of deepestFirst) {
+    const folder = path.join(baseDir, ...relative.split('/'));
+    const stat = fs.lstatSync(folder, { throwIfNoEntry: false });
+    if (!stat || !stat.isDirectory()) continue;
+    try {
+      fs.rmdirSync(folder);
+      removed.push(folder);
+    } catch {
+      // not empty: it holds something that is not ours
+    }
+  }
+  return removed;
+}
+
 // Removes what the plan says: the recorded files that are unchanged, the folders that are empty
-// then. When nothing at all remains, the install record and the skill folder go too; otherwise the
-// record stays, so that running uninstall again does the same and finishes the job once the
-// person's own files are gone. Returns { removed, changed, kept, folderRemoved }.
-export function applyRemoval(folder, plan) {
+// then. When nothing at all remains, the install record and the skill folder go too, and so do the
+// folders above it that the install had created if they are empty now; otherwise the record stays,
+// so that running uninstall again does the same and finishes the job once the person's own files
+// are gone. Returns { removed, changed, kept, folderRemoved, removedFolders }.
+export function applyRemoval(folder, plan, baseDir) {
   const realFolder = fs.realpathSync(folder);
   let removed = 0;
   for (const relative of plan.removeFiles) {
@@ -226,25 +250,57 @@ export function applyRemoval(folder, plan) {
   }
 
   let folderRemoved = false;
+  let removedFolders = [];
   if (plan.remaining.length === 0) {
     ignoreMissing(() => fs.unlinkSync(path.join(folder, RECORD_NAME)));
     try {
       fs.rmdirSync(folder);
       folderRemoved = true;
+      removedFolders = removeEmptyAncestors(baseDir, folder, plan.record.ancestors);
     } catch {
       // not empty after all
     }
   }
-  return { removed, ...describeLeftovers(plan), folderRemoved };
+  return { removed, ...describeLeftovers(plan), folderRemoved, removedFolders };
 }
 
-// Moves the old installed files (and the record) into a backup folder next to the skill folder, so that
+const BACKUP_PREFIX = `.${SKILL_NAME}-backup-`;
+
+// Where a backup is kept: next to the skills folder (inside .claude or .agents), never inside it, so a
+// backup that is left behind holds a SKILL.md that no tool looks at as a skill. Same file system as the
+// skill folder, so moving files in and out is a rename.
+function backupParent(folder) {
+  return path.dirname(path.dirname(folder));
+}
+
+// Backups left behind by an install that failed and could not put the old files back: the folders
+// named .everything-mapped-backup-* in the tool folder (and, from older versions, in its skills folder).
+export function findStaleBackups(baseDir, toolId) {
+  const toolFolder = path.join(baseDir, TOOLS[toolId].folder);
+  const found = [];
+  for (const parent of [toolFolder, path.join(toolFolder, 'skills')]) {
+    let names;
+    try {
+      names = fs.readdirSync(parent);
+    } catch {
+      continue;
+    }
+    for (const name of names.filter((entry) => entry.startsWith(BACKUP_PREFIX))) {
+      const absolute = path.join(parent, name);
+      if (fs.lstatSync(absolute, { throwIfNoEntry: false })?.isDirectory()) found.push(absolute);
+    }
+  }
+  return found.sort();
+}
+
+// Moves the old installed files (and the record) into a backup folder (see backupParent), so that
 // a new copy can be written in their place and the old one can be put back if that fails.
 // Returns { restore(), discard() }: restore() puts everything back and removes the backup; discard()
-// removes the backup once the new copy is in place.
+// removes the backup once the new copy is in place. If restore() cannot put everything back it throws
+// an error that names the backup, which is then left where it is.
 export function moveAside(folder, plan) {
   const realFolder = fs.realpathSync(folder);
-  const backup = fs.mkdtempSync(path.join(path.dirname(folder), `.${SKILL_NAME}-backup-`));
+  const backup = fs.mkdtempSync(path.join(backupParent(folder), BACKUP_PREFIX));
   const moved = [];
   const removedDirs = [];
 

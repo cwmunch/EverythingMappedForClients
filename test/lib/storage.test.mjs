@@ -18,6 +18,7 @@ import {
   encodeMarkup,
   hasHiddenCharacters,
   isStorableAssetName,
+  nameProblems,
   parseAssets,
   parsePack,
   readInputFile,
@@ -35,7 +36,7 @@ import { main as assets } from '../../skill/everything-mapped/scripts/assets.mjs
 import { main as check } from '../../skill/everything-mapped/scripts/check.mjs';
 import { main as next } from '../../skill/everything-mapped/scripts/next.mjs';
 import { describeFlag } from '../../skill/everything-mapped/scripts/lib/render.mjs';
-import { NOW, TODAY, makePackData, makeSchemaDir, makeTempDir, readJson, runScript, schema, testI18n, writeText } from './helpers.mjs';
+import { cpuNow, makePackData, makeSchemaDir, makeTempDir, NOW, readJson, runScript, schema, testI18n, TODAY, WORK_LIMIT_MS, writeText } from './helpers.mjs';
 
 const char = (...codes) => String.fromCodePoint(...codes);
 const FRONT = (file) => `---\nschema: everything-mapped-for-clients/1\nfile: ${file}\nlanguage: da\nupdated: 2026-10-23\n---\n`;
@@ -163,28 +164,28 @@ test('50,000 asset names are matched against 5,000 rows without a pause', async 
   const rows = Array.from({ length: 5000 }, (_, index) => `| assets/f${index}.txt | | | | |\n`).join('');
   fs.writeFileSync(path.join(cwd, 'docs/assets.md'), `| File | What | Owner | Rights | Restrictions |\n|---|---|---|---|---|\n${rows}`);
   for (let index = 0; index < 20000; index += 1) fs.writeFileSync(path.join(cwd, 'docs/assets', `f${index}.txt`), '');
-  const started = performance.now();
+  const started = cpuNow();
   const result = await run(assets, ['--scan', '--json']);
   assert.equal(result.code, 0, result.err);
-  assert.ok(performance.now() - started < 3000, `took ${performance.now() - started} ms`);
+  assert.ok(cpuNow() - started < 2 * WORK_LIMIT_MS, `took ${cpuNow() - started} ms`);
   assert.equal(JSON.parse(result.out).unlisted.length, 15000);
   const data = makePackData([]);
   data.assets = { rows: Array.from({ length: 5000 }, (_, index) => ({ file: `assets/f${index}.txt`, what: '', owner: '', rights: 'x', restrictions: '' })), present: Array.from({ length: 50000 }, (_, index) => `f${index}.txt`) };
-  const validated = performance.now();
+  const validated = cpuNow();
   validatePackData(data, schema, { today: TODAY });
-  assert.ok(performance.now() - validated < 1000);
+  assert.ok(cpuNow() - validated < WORK_LIMIT_MS);
 });
 
 // ---- B. what may be stored ---------------------------------------------------------------------------------------
 
-const REFUSED = [0x202a, 0x202b, 0x202c, 0x202d, 0x202e, 0x2066, 0x2067, 0x2068, 0x2069, 0x061c, 0xe0001, 0xe0041, 0xe007f, 0x200b, 0x2060, 0x2061, 0x2064, 0xfeff, 0xfff9, 0xfffa, 0xfffb, 0x180e];
+const REFUSED = [0x202a, 0x202b, 0x202c, 0x202d, 0x202e, 0x2066, 0x2067, 0x2068, 0x2069, 0x061c, 0xe0001, 0xe0041, 0xe007f, 0x200b, 0x2060, 0x2061, 0x2064, 0xfeff, 0xfff9, 0xfffa, 0xfffb, 0x180e, 0x034f, 0x115f, 0x1160, 0x17b4, 0x17b5, 0x180b, 0x180f, 0x2065, 0x206a, 0x206f, 0x3164, 0xffa0, 0xfff0, 0xfff8, 0x1bca0, 0x1bca3, 0x1d173, 0x1d17a, 0xe0100, 0xe0fff];
 const KEPT = [0x200c, 0x200d, 0xad, 0x200e, 0x200f, 0xfe0f, 0x202f, 0xa0, 0x3000, 0x2003];
 
 test('the refused set is exported as data and is exactly the list of the contract', () => {
   const codes = new Set();
   for (const [from, to] of HIDDEN_CHARACTER_RANGES) for (let code = from; code <= to; code += 1) codes.add(code);
   const expected = new Set();
-  for (const [from, to] of [[0x202a, 0x202e], [0x2066, 0x2069], [0x061c, 0x061c], [0xe0000, 0xe007f], [0x200b, 0x200b], [0x2060, 0x2064], [0xfeff, 0xfeff], [0xfff9, 0xfffb], [0x180e, 0x180e]]) {
+  for (const [from, to] of [[0x034f, 0x034f], [0x061c, 0x061c], [0x115f, 0x1160], [0x17b4, 0x17b5], [0x180b, 0x180f], [0x200b, 0x200b], [0x202a, 0x202e], [0x2060, 0x206f], [0x3164, 0x3164], [0xfeff, 0xfeff], [0xffa0, 0xffa0], [0xfff0, 0xfffb], [0x1bca0, 0x1bca3], [0x1d173, 0x1d17a], [0xe0000, 0xe0fff]]) {
     for (let code = from; code <= to; code += 1) expected.add(code);
   }
   assert.deepEqual([...codes].sort((a, b) => a - b), [...expected].sort((a, b) => a - b));
@@ -311,7 +312,11 @@ test('every file name the policy allows is stored exactly and listed without war
   const stored = parseAssets(fs.readFileSync(path.join(cwd, 'docs/assets.md'), 'utf8'));
   assert.deepEqual(stored.map((row) => row.file).sort(), made.map((name) => `assets/${name}`).sort());
   const report = JSON.parse((await run(check, ['--json'])).out);
-  assert.deepEqual(report.flags.filter((flag) => flag.id.startsWith('assets.')), []);
+  assert.deepEqual(report.flags.filter((flag) => flag.id.startsWith('assets.') && flag.id !== 'assets.notPackable'), []);
+  // The table holds these names exactly; the zip refuses the ones with a character that Windows cannot store.
+  const refusedByZip = made.filter((name) => nameProblems(`docs/assets/${name}`).length > 0).sort();
+  assert.ok(refusedByZip.length >= 3);
+  assert.deepEqual(report.flags.filter((flag) => flag.id === 'assets.notPackable').map((flag) => flag.params.file).sort(), refusedByZip.map((name) => describeAssetName(name)).sort());
   const again = await run(assets, ['--from', 'rows.json', '--json']);
   assert.deepEqual(JSON.parse(again.out).updated.length, made.length, 'the same rows are found again');
 });
@@ -321,7 +326,7 @@ test('the table round trips every allowed name in memory too', () => {
   assert.deepEqual(parseAssets(renderAssets(rows, testI18n('en'))), rows);
   const data = makePackData([]);
   data.assets = { rows, present: GOOD_NAMES };
-  assert.deepEqual(validatePackData(data, schema, { today: TODAY }).flags.filter((flag) => flag.id.startsWith('assets.')), []);
+  assert.deepEqual(validatePackData(data, schema, { today: TODAY }).flags.filter((flag) => flag.id.startsWith('assets.') && flag.id !== 'assets.notPackable'), []);
 });
 
 test('names with a hidden character, a control character, a backslash or a space at an end are not put in the table', async (t) => {
@@ -424,12 +429,12 @@ test('--from refuses a folder or a device, reads at most the limit and accepts a
     assert.match(result.err, /folder is not a file\./);
   }
   if (fs.existsSync('/dev/zero')) {
-    const started = performance.now();
+    const started = cpuNow();
     for (const main of [answer, assets]) {
       const result = await run(main, ['--from', '/dev/zero']);
       assert.equal(result.code, 2);
     }
-    assert.ok(performance.now() - started < 1000);
+    assert.ok(cpuNow() - started < WORK_LIMIT_MS);
     assert.deepEqual(readInputFile('/dev/zero'), { problem: 'notFile' });
   }
   const base = '{"language":"da","answers":[]}';
@@ -505,13 +510,14 @@ test('assets --init works with a relative --root that does not exist yet and ref
   assert.deepEqual(fs.readdirSync(target), []);
 });
 
-test('assets --from makes the folder when it is missing and nothing is a link', async (t) => {
+test('assets --init makes the folder, --from only lists files that are in it, and nothing is a link', async (t) => {
   const { cwd, run } = setup(t);
+  assert.equal(JSON.parse((await run(assets, ['--init', '--json'])).out).created, true);
+  assert.ok(fs.statSync(path.join(cwd, 'docs/assets')).isDirectory());
   writeRows(cwd, []);
   const result = await run(assets, ['--from', 'rows.json', '--delete', '--json']);
   assert.equal(result.code, 0, result.err);
-  assert.equal(JSON.parse(result.out).created, true);
-  assert.ok(fs.statSync(path.join(cwd, 'docs/assets')).isDirectory());
+  assert.equal(JSON.parse(result.out).created, null, '--from does not make the folder');
   assert.equal(fs.existsSync(path.join(cwd, 'rows.json')), false);
   writeRows(cwd, [{ file: 'missing.png' }]);
   const refused = await run(assets, ['--from', 'rows.json']);

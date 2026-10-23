@@ -7,7 +7,7 @@ import { assertNoPositionals, parseArgs } from './args.mjs';
 import { copyTree, listTree } from './copy.mjs';
 import { detectTools } from './detect.mjs';
 import { CliError } from './errors.mjs';
-import { say, sayLeftInPlace } from './output.mjs';
+import { say, sayLeftInPlace, sayStaleBackups } from './output.mjs';
 import { askTargets } from './prompt.mjs';
 import { RECORD_NAME } from './record.mjs';
 import { resolveScopes } from './scope.mjs';
@@ -16,6 +16,7 @@ import {
   assertParentsSafe,
   describeLeftovers,
   findBlocking,
+  findStaleBackups,
   inspectSkillFolder,
   moveAside,
   planRemoval,
@@ -125,7 +126,10 @@ function installOne(plan, tree, io, t) {
 
   const written = [];
   try {
-    copyTree(tree, plan.folder, (file) => written.push(file));
+    copyTree(tree, plan.folder, (file) => written.push(file), {
+      baseDir: plan.baseDir,
+      inheritedAncestors: plan.removal?.record.ancestors ?? [],
+    });
   } catch (error) {
     aside?.restore();
     throw error;
@@ -168,6 +172,10 @@ export async function runInstall(argv, io, ctx, text) {
   const targets = resolveScopes(values, ctx);
   const tools = await chooseTools(values, io, ctx, t);
   const tree = readSource(ctx.sourceDir);
+  // Named first, so the person sees them even when the install is refused.
+  for (const { baseDir } of targets) {
+    for (const tool of tools) sayStaleBackups(io, t, findStaleBackups(baseDir, tool));
+  }
   const plans = planInstall(targets, tools, values.force === true, tree);
 
   sayScopes(targets, io, t);

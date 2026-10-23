@@ -89,7 +89,7 @@ test('parsePack gives the language and depth of the English fixture and its flag
   const pack = parsePack(path.join(FIXTURES, 'pack-en-partial'), schema);
   assert.equal(pack.language, 'en');
   assert.equal(pack.depth, 'standard');
-  assert.deepEqual(pack.assets, { rows: [], present: [] });
+  assert.deepEqual(pack.assets, { rows: [], present: [], invalid: [] });
   assert.equal(pack.files.brand.answers['B.purpose'].body, 'Fresh bread every day.');
 });
 

@@ -73,14 +73,15 @@ function languageFromBrowser(win) {
   return language.toLowerCase().startsWith('da') ? 'da' : 'en';
 }
 
-// The storage object, or null when the browser has none or refuses it (private windows, blocked
-// site data). The form works without it.
+// The storage object, or null when the browser has none or refuses it (blocked site data). Reading
+// is all that is done to find out: a browser that blocks storage throws on a read, and a write that
+// is refused later (a full storage) is told to the person when it happens. Nothing is written at
+// the start, so a page that keeps nothing leaves no trace.
 function safeStorage(win, key) {
   try {
     const storage = win.localStorage;
     if (!storage) return null;
-    storage.setItem(`${key}.probe`, '1');
-    storage.removeItem(`${key}.probe`);
+    storage.getItem(`${key}${KEEP_SUFFIX}`);
     return storage;
   } catch {
     return null;
@@ -130,12 +131,28 @@ function guardedI18n(base) {
 }
 
 // What was typed or pasted into a field, cleaned (see cleanField). The field is changed to show the
-// cleaned text, so what is on the screen is what goes into the pack. `note` (optional, see
-// buildRemovedNote) is told how many hidden characters were taken out.
+// cleaned text, so what is on the screen is what goes into the pack, and the caret stays where the
+// person was typing. `note` (optional, see buildRemovedNote) is told how many hidden characters
+// were taken out.
 function typedValue(field, limit, note) {
   const typed = field.value;
   const cleaned = cleanField(typed, limit);
-  if (cleaned !== typed) field.value = cleaned;
+  if (cleaned !== typed) {
+    const from = field.selectionStart;
+    const to = field.selectionEnd;
+    const focused = Boolean(field.ownerDocument) && field.ownerDocument.activeElement === field;
+    field.value = cleaned;
+    // Setting the text puts the caret at the end; it goes back to where it was in the text, counted
+    // after what was taken out or broken (the part before the caret is cleaned the same way).
+    if (focused && typeof from === 'number' && typeof to === 'number' && typeof field.setSelectionRange === 'function') {
+      const moved = (position) => Math.min(cleaned.length, cleanField(typed.slice(0, position), limit).length);
+      try {
+        field.setSelectionRange(moved(from), moved(to), field.selectionDirection || 'none');
+      } catch {
+        // A field that has no caret (a date, say).
+      }
+    }
+  }
   if (note) note.add(countRemoved(typed));
   return cleaned;
 }
@@ -183,13 +200,21 @@ function createApp(env) {
     recovered: Boolean(env.recovered),
     notes: env.notes || null,
     broken: env.broken ?? null,
-    // Whether the answers are kept in this browser (see readKeepSetting), which copy in the storage
-    // this window read or wrote last (revision, writeId; revision -1 means none was read), and whether
-    // the storage holds another copy that has not been dealt with yet (conflict).
+    // Whether the answers are kept in this browser (see "Keeping the answers"), which copy in the
+    // storage this window read or wrote last (revision, writeId; revision -1 means none was read),
+    // the notice with buttons that is showing (syncMode: null, 'changed', 'removed' or 'offer'),
+    // and whether saving waits for a choice (conflict: 'changed' or 'removed').
     keep: Boolean(env.keep),
     revision: env.copy ? env.copy.revision : env.storage && env.keep ? 0 : -1,
     writeId: env.copy ? env.copy.writeId : '',
+    syncMode: env.offer ? 'offer' : null,
     conflict: false,
+    // Whether a pack is being built, and what keeps the person from leaving answers behind (see guard).
+    building: false,
+    exporting: false,
+    hasContent: false,
+    savedSignature: '',
+    guarded: false,
     i18n: null,
     root: null,
     analysis: null,
@@ -219,17 +244,21 @@ function createApp(env) {
   app.setKeep = (on) => setKeep(app, on);
   app.showOtherAnswers = () => showOtherAnswers(app);
   app.keepThisWindow = () => keepThisWindow(app);
+  app.continueSaved = () => continueSaved(app);
+  app.removeOffered = () => removeOffered(app);
   app.checkStorage = () => checkStorage(app);
   app.setLanguage = (lang) => setLanguage(app, lang);
   app.yieldToPage = () => nextTurn(app.win);
+  app.guard = (event) => leavingPage(app, event);
+  app.savedSignature = stateSignature(app);
   return app;
 }
 
 // A message area is a status line and an alert line next to what the message is about. Both stay
 // in the page (empty ones take no room), so screen readers announce a message when its text changes.
 function buildNotices(app) {
-  const status = app.h('p', { class: 'notice', role: 'status' });
-  const alert = app.h('p', { class: 'notice notice-error', role: 'alert' });
+  const status = app.h('p', { class: 'notice', role: 'status', tabindex: '-1' });
+  const alert = app.h('p', { class: 'notice notice-error', role: 'alert', tabindex: '-1' });
   return { status, alert, element: app.h('div', { class: 'notices' }, status, alert) };
 }
 
@@ -288,32 +317,58 @@ function cancelWork(app) {
 // What goes into the browser's storage: the answers, and of an attached file its name, description
 // and size, never its content. Each copy carries a number (revision) and a mark of its own
 // (writeId). A window only writes over the copy it read or wrote last; if the storage holds another
-// one (a second window saved, or the copy was removed), the person chooses (raiseConflict).
+// one (a second window saved, or the copy was removed), saving waits and the person chooses.
+//
+// Who may switch keeping on. A page that is not a web page (opened from a file, or from anything
+// else that is not http or https) shares its storage with every other page of that kind on the
+// computer, and any of them can write there. So on such a page keeping is off at the start and is
+// only ever on because the person ticked the box in this window: it is held in memory, and what is
+// stored is never taken as a yes. Answers found in the storage are offered ("Continue where I left
+// off", "Remove it") and never read without a click. What the storage may say is "no": a '0' next to
+// the answers, written when the person turns keeping off, is respected on every kind of page and at
+// once in every window, because a page can always stop the saving (it can delete the answers too).
+// On a web address keeping starts on.
 
-// A page opened from a file shares its storage with every other page opened from a file on this
-// computer, so other pages could read the answers.
-function isFilePage(win) {
-  return Boolean(win.location) && win.location.protocol === 'file:';
+// Keys of earlier versions, removed together with the current one. (None was ever published, so
+// there is nothing in them; this is tidiness, and a way out if one has ever been made by hand.)
+const LEGACY_KEYS = ['emfc.form.v1'];
+
+// Any page that is not a web page: a file, or something this code does not know.
+function isLocalPage(win) {
+  const protocol = win.location && win.location.protocol;
+  return protocol !== 'http:' && protocol !== 'https:';
 }
 
-// Whether the answers are kept in this browser: what the person chose last, else off for a page
-// opened from a file and on for a web address.
-function readKeepSetting(storage, key, win) {
+// Whether keeping was turned off, in this window or another one.
+function keepIsOff(storage, key) {
   try {
-    const value = storage.getItem(key + KEEP_SUFFIX);
-    if (value === '1') return true;
-    if (value === '0') return false;
+    return storage.getItem(key + KEEP_SUFFIX) === '0';
   } catch {
-    // Nothing chosen yet, or the storage refuses: the default below.
+    return false;
   }
-  return !isFilePage(win);
 }
 
-function writeKeepSetting(app, on) {
+function writeKeepOff(app) {
   try {
-    app.storage.setItem(app.key + KEEP_SUFFIX, on ? '1' : '0');
+    app.storage.setItem(app.key + KEEP_SUFFIX, '0');
   } catch {
-    // The choice holds for this visit only.
+    // The choice holds for this window only.
+  }
+}
+
+function clearKeepOff(app) {
+  try {
+    app.storage.removeItem(app.key + KEEP_SUFFIX);
+  } catch {
+    // Nothing to remove.
+  }
+}
+
+function hasStoredCopy(storage, key) {
+  try {
+    return storage.getItem(key) !== null;
+  } catch {
+    return false;
   }
 }
 
@@ -321,10 +376,56 @@ function attachedCount(state) {
   return state.assets.filter((asset) => asset.data).length;
 }
 
+// The answers, as text, without the place the person is at and without file contents: two states with
+// the same text hold the same answers.
+function stateSignature(app) {
+  const saved = app.engine.serializeState(app.state, { files: false });
+  saved.currentModule = '';
+  return JSON.stringify(saved);
+}
+
+function hasUnsavedChanges(app) {
+  return stateSignature(app) !== app.savedSignature;
+}
+
+// What this window shows is now also somewhere else (stored, downloaded, or just loaded from there).
+function markSaved(app, signature = stateSignature(app)) {
+  app.savedSignature = signature;
+  updateGuard(app);
+}
+
+// Whether there are answers that would be lost if the page were left now.
+function atRisk(app) {
+  return app.hasContent && hasUnsavedChanges(app);
+}
+
+// The browser asks "leave the page?" only while answers are at risk: when keeping is off, a save
+// failed or waits, or a pack or the form data was not saved since the last change. The check is made
+// when the page is left, after what waits to be saved has been saved, and the guard is taken off
+// again when nothing is at risk.
+function leavingPage(app, event) {
+  flushWork(app);
+  updateGuard(app);
+  if (!atRisk(app)) return;
+  event.preventDefault();
+  event.returnValue = '';
+}
+
+function updateGuard(app) {
+  const risk = atRisk(app);
+  if (risk && !app.guarded) {
+    app.win.addEventListener('beforeunload', app.guard);
+    app.guarded = true;
+  } else if (!risk && app.guarded) {
+    app.win.removeEventListener('beforeunload', app.guard);
+    app.guarded = false;
+  }
+}
+
 function saveStatusText(app, result) {
   if (!app.storage) return app.t('ui.form.save.unavailable');
   if (!app.keep) return app.t('ui.form.save.off');
-  if (app.conflict) return app.t('ui.form.save.paused');
+  if (app.conflict) return app.t(app.syncMode === 'removed' ? 'ui.form.save.pausedRemoved' : 'ui.form.save.paused');
   if (!result.ok) return app.t('ui.form.save.failed');
   const time = clockText(app);
   return result.files ? app.t('ui.form.save.savedNoFiles', { time }) : app.t('ui.form.save.saved', { time });
@@ -364,7 +465,7 @@ function newWriteId() {
 }
 
 function removeStored(storage, key) {
-  for (const name of [key, key + BROKEN_SUFFIX]) {
+  for (const name of [key, key + BROKEN_SUFFIX, ...LEGACY_KEYS]) {
     try {
       storage.removeItem(name);
     } catch {
@@ -375,6 +476,7 @@ function removeStored(storage, key) {
 
 function storeCopy(app, revision) {
   const writeId = newWriteId();
+  const signature = stateSignature(app);
   try {
     const saved = app.engine.serializeState(app.state, { files: false, savedAt: isoDateTime(new Date()), revision, writeId });
     app.storage.setItem(app.key, JSON.stringify(saved));
@@ -383,35 +485,100 @@ function storeCopy(app, revision) {
   }
   app.revision = revision;
   app.writeId = writeId;
+  markSaved(app, signature);
   return { ok: true, files: attachedCount(app.state) > 0 };
 }
 
-// Another copy is in the storage: saving stops and the person is asked (the notice with two buttons).
-function raiseConflict(app) {
-  if (app.conflict) return;
-  app.conflict = true;
-  cancelPending(app, 'save');
-  if (app.refs.sync) app.refs.sync.element.hidden = false;
-  if (app.refs.top) showNotice(app.refs.top, 'status', '');
-  showSaveStatus(app, { ok: false });
+// Moves the focus to the message that is showing in a message area (a status or an alert line).
+function focusNotice(area) {
+  const target = area.alert.textContent !== '' ? area.alert : area.status;
+  if (target && typeof target.focus === 'function') target.focus();
 }
 
-function clearConflict(app) {
-  app.conflict = false;
-  if (app.refs.sync) app.refs.sync.element.hidden = true;
-}
+// ----- the notice with buttons (three kinds)
 
-// Writes the state to the browser's storage, unless the person does not keep answers here, the page
-// waits for a choice, or the storage holds a copy this window did not write. Returns { ok, files }.
-function writeState(app) {
-  if (!app.storage || !app.keep || app.conflict) return { ok: false, files: false };
-  const stored = readStoredCopy(app);
-  if (stored === null) return { ok: false, files: false };
-  if (isForeign(app, stored)) {
-    raiseConflict(app);
-    return { ok: false, files: false };
+// The text and the buttons of the notice that is showing: [label, what it does].
+function syncSpec(app) {
+  const { t } = app;
+  if (app.syncMode === 'removed') {
+    return { text: t('ui.form.sync.removed'), buttons: [[t('ui.form.sync.keepHere'), () => keepThisWindow(app, true)], [t('ui.form.sync.close'), () => closeRemoved(app)]] };
   }
-  return storeCopy(app, Math.max(app.revision, 0) + 1);
+  if (app.syncMode === 'offer') {
+    return { text: t('ui.form.offer.found'), buttons: [[t('ui.form.offer.continue'), () => continueSaved(app)], [t('ui.form.offer.remove'), () => removeOffered(app)]] };
+  }
+  return { text: t('ui.form.sync.changed'), buttons: [[t('ui.form.sync.show'), () => showOtherAnswers(app)], [t('ui.form.sync.keep'), () => keepThisWindow(app, false)]] };
+}
+
+function buildSyncNotice(app) {
+  const text = app.h('p', {});
+  const actions = app.h('div', { class: 'actions' });
+  const element = app.h('div', { class: 'sync', role: 'alert', tabindex: '-1', hidden: app.syncMode === null }, text, actions);
+  const sync = { element, text, actions };
+  fillSync(app, sync);
+  return sync;
+}
+
+function fillSync(app, sync = app.refs.sync) {
+  if (!sync) return;
+  sync.element.hidden = app.syncMode === null;
+  if (app.syncMode === null) return;
+  const spec = syncSpec(app);
+  setText(sync.text, spec.text);
+  sync.actions.replaceChildren(...spec.buttons.map(([label, action], index) => app.h('button', { type: 'button', class: index === 0 ? 'btn' : 'btn secondary', onclick: action }, label)));
+}
+
+// Shows (or, with null, takes away) the notice. A notice that has just appeared gets the focus, so
+// that a person who types, or uses a screen reader, meets it.
+function setSync(app, mode, options = {}) {
+  app.syncMode = mode;
+  app.conflict = mode === 'changed' || mode === 'removed';
+  fillSync(app);
+  showSaveStatus(app, { ok: false });
+  if (mode !== null && options.focus !== false && app.refs.sync) app.refs.sync.element.focus();
+}
+
+// The storage holds another copy, or none any more: saving waits and the person is asked. A window
+// with nothing typed since it last read or wrote the copy just takes the other one (adoptStored).
+// Returns true when it did.
+function raiseConflict(app, kind) {
+  if (app.syncMode === kind) return false;
+  cancelPending(app, 'save');
+  if (kind === 'changed' && !hasUnsavedChanges(app) && adoptStored(app, true)) return true;
+  if (app.refs.top) showNotice(app.refs.top, 'status', '');
+  setSync(app, kind);
+  return false;
+}
+
+// Turns keeping off in this window (the person said so here or in another window, or closed the
+// notice): the box is unticked, nothing waits to be saved, and the notice goes.
+function stopKeeping(app, messageKey, notices = app.refs.top) {
+  app.keep = false;
+  app.revision = 0;
+  app.writeId = '';
+  if (app.refs.keepBox) app.refs.keepBox.checked = false;
+  cancelPending(app, 'save');
+  setSync(app, null, { focus: false });
+  updateGuard(app);
+  if (messageKey) showNotice(notices, 'status', app.t(messageKey));
+}
+
+// Writes the state to the browser's storage, unless the person does not keep answers here (also as
+// told by another window just now), the page waits for a choice, or the storage holds a copy this
+// window did not write. Returns { ok, files }.
+function writeState(app) {
+  const refused = { ok: false, files: false };
+  if (!app.storage || !app.keep || app.conflict) return refused;
+  if (keepIsOff(app.storage, app.key)) {
+    stopKeeping(app, 'ui.form.keep.stopped');
+    return refused;
+  }
+  const stored = readStoredCopy(app);
+  if (stored === null) return refused;
+  if (isForeign(app, stored)) {
+    // Taking the other copy leaves this window as saved as it was ever going to be.
+    return raiseConflict(app, stored.exists ? 'changed' : 'removed') ? { ok: true, files: attachedCount(app.state) > 0 } : refused;
+  }
+  return storeCopy(app, app.engine.nextRevision(Math.max(app.revision, 0)));
 }
 
 function persistState(app) {
@@ -420,83 +587,172 @@ function persistState(app) {
   return result;
 }
 
-// A second window saved (or removed) the answers: look at the storage now, so the notice shows at once.
+// Another window saved, removed or turned off the answers: look at the storage now, so that the
+// notice shows at once, without a key being pressed here.
 function checkStorage(app) {
-  if (!app.storage || !app.keep || app.conflict) return false;
+  if (!app.storage || !app.keep) return false;
+  if (keepIsOff(app.storage, app.key)) {
+    stopKeeping(app, 'ui.form.keep.stopped');
+    return true;
+  }
   const stored = readStoredCopy(app);
   if (stored === null || !isForeign(app, stored)) return false;
-  raiseConflict(app);
+  raiseConflict(app, stored.exists ? 'changed' : 'removed');
   return true;
 }
 
-// "Show the other window's answers": the page shows what the storage holds. Attached files that this
-// window has and the stored copy lists (storage never holds their content) stay.
-function showOtherAnswers(app) {
+function hasWork(app) {
+  return app.engine.hasAnswers(app.state) || app.state.assets.length > 0;
+}
+
+function confirmed(app, key) {
+  return typeof app.win.confirm !== 'function' || app.win.confirm(app.t(key));
+}
+
+// The page shows what the storage holds. Attached files that this window has and the stored copy
+// lists (storage never holds their content) stay. Returns true when it was done. `quiet`: no message
+// takes the focus (a window that had nothing typed and just follows the other one).
+function adoptStored(app, quiet) {
   const loaded = loadSavedState(app.engine, app.storage, app.key);
   if (loaded.text) {
     app.fail(app.t('ui.form.sync.unreadable'));
-    return;
+    return false;
   }
-  const state = loaded.state ? app.engine.adoptFiles(app.state, loaded.state) : app.engine.newState({ language: app.state.language });
-  const before = { revision: app.revision, writeId: app.writeId, conflict: app.conflict };
+  if (!loaded.state) {
+    // The copy is gone: that is "removed", never an empty form to show.
+    setSync(app, 'removed');
+    return false;
+  }
+  const before = { revision: app.revision, writeId: app.writeId, syncMode: app.syncMode, conflict: app.conflict };
   app.revision = loaded.copy ? loaded.copy.revision : 0;
   app.writeId = loaded.copy ? loaded.copy.writeId : '';
+  app.syncMode = null;
   app.conflict = false;
   try {
-    replaceState(app, state);
+    replaceState(app, app.engine.adoptFiles(app.state, loaded.state));
   } catch (error) {
     Object.assign(app, before);
     renderApp(app);
     app.fail(errorText(app, error, 'ui.form.err.importInvalid'));
-    return;
+    return false;
   }
   app.notify(app.t('ui.form.sync.shown'));
+  if (!quiet) focusNotice(app.refs.top);
+  return true;
 }
 
-// "Keep what is in this window": this window's answers replace the stored ones, on purpose.
-function keepThisWindow(app) {
+// "Show the other window's answers". What is in this window goes, so the person is asked first when
+// there is something in it.
+function showOtherAnswers(app) {
+  if (hasWork(app) && !confirmed(app, 'ui.form.sync.confirmShow')) return;
+  adoptStored(app, false);
+}
+
+// "Keep what is in this window" (the stored answers were changed) or "Keep my answers here" (they
+// were removed): this window's answers are saved, on purpose. Replacing saved answers with an empty
+// form is asked about; and nothing is written when keeping was turned off in the meantime.
+function keepThisWindow(app, afterRemoval) {
+  if (keepIsOff(app.storage, app.key)) {
+    stopKeeping(app, 'ui.form.keep.stopped');
+    focusNotice(app.refs.top);
+    return;
+  }
   const stored = readStoredCopy(app);
   if (stored === null) {
     app.fail(app.t('ui.form.save.failed'));
     return;
   }
+  if (stored.exists && !hasWork(app) && !confirmed(app, 'ui.form.sync.confirmKeepEmpty')) return;
   cancelPending(app, 'save');
-  const result = storeCopy(app, Math.max(stored.revision, app.revision, 0) + 1);
+  const result = storeCopy(app, app.engine.nextRevision(Math.max(stored.revision, app.revision, 0)));
   if (!result.ok) {
     showSaveStatus(app, result);
     app.fail(app.t('ui.form.save.failed'));
     return;
   }
-  clearConflict(app);
+  setSync(app, null, { focus: false });
   showSaveStatus(app, result);
-  app.notify(app.t('ui.form.sync.kept'));
+  app.notify(app.t(afterRemoval ? 'ui.form.sync.keptHere' : 'ui.form.sync.kept'));
+  focusNotice(app.refs.top);
 }
 
-// The box "Keep my answers in this browser". Off removes what is stored; the page keeps what it shows.
+// "Close" after the saved answers were removed in another window: the removal is respected, and this
+// window does not keep answers until the box is ticked again.
+function closeRemoved(app) {
+  stopKeeping(app, null);
+  if (app.refs.keepBox) app.refs.keepBox.focus();
+}
+
+// "Continue where I left off": the answers an earlier visit saved are read, and keeping goes on.
+function continueSaved(app) {
+  const loaded = loadSavedState(app.engine, app.storage, app.key);
+  if (loaded.text) {
+    // Saved answers that cannot be used are put aside, as when the page starts.
+    app.broken = setAsideBrokenData(app.storage, app.key, loaded.text);
+    setSync(app, null, { focus: false });
+    renderApp(app);
+    app.fail(app.t('ui.form.save.broken'));
+    focusNotice(app.refs.top);
+    return;
+  }
+  if (!loaded.state) {
+    setSync(app, null, { focus: false });
+    app.notify(app.t('ui.form.offer.removed'));
+    focusNotice(app.refs.top);
+    return;
+  }
+  if (hasWork(app) && !confirmed(app, 'ui.form.sync.confirmShow')) return;
+  clearKeepOff(app);
+  app.keep = true;
+  app.revision = loaded.copy ? loaded.copy.revision : 0;
+  app.writeId = loaded.copy ? loaded.copy.writeId : '';
+  app.syncMode = null;
+  app.conflict = false;
+  try {
+    replaceState(app, app.engine.adoptFiles(app.state, loaded.state));
+  } catch (error) {
+    app.keep = false;
+    app.revision = -1;
+    app.writeId = '';
+    renderApp(app);
+    app.fail(errorText(app, error, 'ui.form.err.importInvalid'));
+    return;
+  }
+  app.notify([app.t('ui.form.save.restored'), ...changeNotes(app, loaded.notes)].join(' '));
+  focusNotice(app.refs.top);
+}
+
+// "Remove it": the answers an earlier visit saved are deleted from the storage.
+function removeOffered(app) {
+  removeStored(app.storage, app.key);
+  setSync(app, null, { focus: false });
+  app.notify(app.t('ui.form.offer.removed'));
+  focusNotice(app.refs.top);
+}
+
+// The box "Keep my answers in this browser". Off removes what is stored and tells the other windows
+// (a '0' in the storage), so none of them writes the answers back; the page keeps what it shows.
 // `notices` is where the message goes (the top of the page by default).
 function setKeep(app, on, notices = app.refs.top) {
   if (!app.storage) return;
-  app.keep = on;
-  writeKeepSetting(app, on);
-  if (app.refs.keepBox) app.refs.keepBox.checked = on;
   if (on) {
+    clearKeepOff(app);
+    app.keep = true;
+    if (app.refs.keepBox) app.refs.keepBox.checked = true;
     cancelPending(app, 'save');
     persistState(app);
     return;
   }
-  cancelPending(app, 'save');
+  writeKeepOff(app);
   removeStored(app.storage, app.key);
-  app.revision = 0;
-  app.writeId = '';
-  clearConflict(app);
-  showSaveStatus(app, { ok: false });
-  showNotice(notices, 'status', app.t('ui.form.keep.removed'));
+  stopKeeping(app, 'ui.form.keep.removed', notices);
 }
 
 // The button after a download: the same as turning the box off.
 function removeSavedAnswers(app) {
   setKeep(app, false, app.refs.finish.notices);
   app.refs.finish.afterDownload.hidden = true;
+  focusNotice(app.refs.finish.notices);
 }
 
 // Reads what an earlier visit saved. -> { state, notes, copy } when it is whole, { text } when there
@@ -599,23 +855,6 @@ function changeNotes(app, notes) {
   return sentences;
 }
 
-// The notice with two buttons that shows when the storage holds answers this window did not write.
-function buildSyncNotice(app) {
-  const { h, t } = app;
-  const element = h(
-    'div',
-    { class: 'sync', role: 'alert', hidden: !app.conflict },
-    h('p', {}, t('ui.form.sync.changed')),
-    h(
-      'div',
-      { class: 'actions' },
-      h('button', { type: 'button', class: 'btn', onclick: () => showOtherAnswers(app) }, t('ui.form.sync.show')),
-      h('button', { type: 'button', class: 'btn secondary', onclick: () => keepThisWindow(app) }, t('ui.form.sync.keep')),
-    ),
-  );
-  return { element };
-}
-
 function buildTop(app) {
   const { h, t } = app;
   app.refs.langButtons = {};
@@ -651,7 +890,7 @@ function buildKeepBox(app) {
   if (!app.storage) return null;
   const box = app.h('input', { type: 'checkbox', checked: app.keep, onchange: () => setKeep(app, box.checked) });
   app.refs.keepBox = box;
-  const label = isFilePage(app.win) ? 'ui.form.keep.labelFile' : 'ui.form.keep.label';
+  const label = isLocalPage(app.win) ? 'ui.form.keep.labelFile' : 'ui.form.keep.label';
   return app.h('label', { class: 'option keep' }, box, app.h('span', {}, app.t(label)));
 }
 
@@ -1360,6 +1599,7 @@ function buildFinish(app) {
   const finish = {
     summary: h('p', { class: 'finish-summary' }),
     leftOut: h('p', { class: 'notice', hidden: true }),
+    lacking: h('p', { class: 'notice notice-error', hidden: true }),
     openHeading: h('h3', {}, t('level.gate1')),
     openList: h('ul', { class: 'plain-list' }),
     openEmpty: h('p', { class: 'muted' }, t('ui.form.finish.noneOpen')),
@@ -1371,7 +1611,8 @@ function buildFinish(app) {
     checksEmpty: h('p', { class: 'muted' }, t('ui.form.finish.noChecks')),
     nameHint: h('p', { class: 'hint' }, t('ui.form.finish.needName')),
     sendHint: h('p', { class: 'muted' }),
-    download: h('button', { type: 'button', class: 'btn', onclick: () => downloadPack(app) }, t('ui.form.finish.download')),
+    download: h('button', { type: 'button', class: 'btn', disabled: app.building, onclick: () => downloadPack(app) }, t('ui.form.finish.download')),
+    exportButton: h('button', { type: 'button', class: 'btn secondary', disabled: app.exporting, onclick: () => exportFormData(app) }, t('ui.form.finish.export')),
     notices: buildNotices(app),
   };
   // After a download: remove the saved answers from this browser (shown when there are some).
@@ -1387,7 +1628,7 @@ function buildFinish(app) {
   const section = h(
     'section',
     { class: 'module', id: 'module-finish', 'aria-labelledby': 'module-finish-title', hidden: true },
-    h('header', { class: 'module-head' }, heading, h('p', { class: 'intro' }, t('ui.form.finish.intro')), finish.summary, finish.leftOut),
+    h('header', { class: 'module-head' }, heading, h('p', { class: 'intro' }, t('ui.form.finish.intro')), finish.summary, finish.leftOut, finish.lacking),
     h(
       'div',
       { class: 'finish' },
@@ -1401,7 +1642,7 @@ function buildFinish(app) {
         finish.nameHint,
         finish.download,
         finish.sendHint,
-        h('button', { type: 'button', class: 'btn secondary', onclick: () => exportFormData(app) }, t('ui.form.finish.export')),
+        finish.exportButton,
         h('p', { class: 'muted' }, t('ui.form.finish.exportHint')),
         finish.notices.element,
         finish.afterDownload,
@@ -1444,6 +1685,12 @@ function refreshFinish(app, report, progress) {
   const left = app.analysis.leftOut;
   setText(finish.leftOut, left.answers + left.files === 0 ? '' : t('ui.form.finish.leftOut', left));
   finish.leftOut.hidden = left.answers + left.files === 0;
+  // Files that are attached but have no content on this page are not in the pack: they are named, and
+  // the button then says what it does.
+  const lacking = app.analysis.lacking;
+  setText(finish.lacking, lacking.length === 0 ? '' : t('ui.form.finish.lacking', { names: namesText(app, lacking) }));
+  finish.lacking.hidden = lacking.length === 0;
+  setText(finish.download, t(lacking.length === 0 ? 'ui.form.finish.download' : 'ui.form.finish.downloadWithout'));
   const flags = report.flags.filter((flag) => flag.severity === 'block' || flag.severity === 'warn').slice(0, MAX_LISTED_ITEMS);
   const dropped = app.analysis.problems.map((problem) => {
     const label = t(`q.${problem.params.id}.label`);
@@ -1546,6 +1793,8 @@ function refreshApp(app) {
   const { engine, state } = app;
   try {
     app.analysis = engine.analyze(state);
+    app.hasContent = hasAnyAnswer(app.analysis.packData);
+    updateGuard(app);
     const report = app.analysis.report;
     const progress = engine.progress(report, state.depth);
     refreshQuestions(app, report);
@@ -1636,43 +1885,58 @@ function nextFrame(win) {
 }
 
 async function downloadPack(app) {
-  const button = app.refs.finish.download;
-  const notices = app.refs.finish.notices;
-  button.disabled = true;
+  if (app.building) return;
+  app.building = true;
+  // The page may be drawn again while the pack is built (another language, say): the elements are
+  // looked up each time, and nothing else starts a build until this one is done.
+  const notices = () => app.refs.finish.notices;
+  app.refs.finish.download.disabled = true;
   app.refs.finish.afterDownload.hidden = true;
-  showNotice(notices, 'status', app.t('ui.form.finish.building'));
+  showNotice(notices(), 'status', app.t('ui.form.finish.building'));
   try {
-    await nextFrame(app.win);
-    const pack = await app.engine.buildPack(app.state, { now: new Date(), yieldToPage: app.yieldToPage });
+    const signature = stateSignature(app);
+    const pack = await app.engine.buildPack(app.state, { now: new Date(), yieldToPage: app.yieldToPage, beforeWork: () => nextFrame(app.win) });
     triggerDownload(app, pack.name, new app.win.Blob(pack.parts, { type: 'application/zip' }));
-    const message = app.t('ui.form.finish.done', { name: pack.name, size: formatBytes(pack.size, app.state.language) });
-    showNotice(notices, 'status', pack.large ? `${message} ${app.t('ui.form.files.big')}` : message);
+    markSaved(app, signature);
+    const done = { name: pack.name, size: formatBytes(pack.size, app.state.language) };
+    let message = app.t('ui.form.finish.done', done);
+    if (pack.lacking.length > 0) message = app.t('ui.form.finish.doneWithout', { ...done, names: namesText(app, pack.lacking) });
+    showNotice(notices(), 'status', pack.large ? `${message} ${app.t('ui.form.files.big')}` : message);
     app.refs.finish.afterDownload.hidden = !(app.storage && (app.keep || readStoredCopy(app)?.exists));
   } catch (error) {
-    showNotice(notices, 'alert', errorText(app, error, 'ui.form.err.build'));
+    showNotice(notices(), 'alert', errorText(app, error, 'ui.form.err.build'));
   } finally {
-    button.disabled = false;
+    app.building = false;
+    app.refs.finish.download.disabled = false;
   }
 }
 
 // The form data as a file, with the attached files when they fit (see exportPlan); when they do not,
 // the file lists them and the person is told which ones to attach again after loading it. The text
-// is made in pieces.
-function exportFormData(app) {
-  const notices = app.refs.finish.notices;
+// is made in pieces, and the page gets turns while it is.
+async function exportFormData(app) {
+  if (app.exporting) return;
+  app.exporting = true;
+  const notices = () => app.refs.finish.notices;
+  app.refs.finish.exportButton.disabled = true;
   try {
     const now = new Date();
-    const plan = app.engine.exportPlan(app.state, isoDateTime(now));
+    const signature = stateSignature(app);
+    const plan = await app.engine.exportPlan(app.state, isoDateTime(now), { yieldToPage: app.yieldToPage });
     const blob = new app.win.Blob(plan.parts, { type: 'application/json' });
     triggerDownload(app, `everything-mapped-form-${localDate(now)}.json`, blob);
+    markSaved(app, signature);
     let message = app.t('ui.form.finish.exported');
     if (plan.reattach.length > 0) {
       message = app.t(plan.withFiles ? 'ui.form.finish.exportedMissing' : 'ui.form.finish.exportedNoFiles', { names: namesText(app, plan.reattach) });
     }
-    showNotice(notices, 'status', message);
+    showNotice(notices(), 'status', message);
   } catch (error) {
     if (typeof console !== 'undefined') console.error(error);
-    showNotice(notices, 'alert', app.t('ui.form.err.exportTooLarge'));
+    showNotice(notices(), 'alert', app.t('ui.form.err.exportTooLarge'));
+  } finally {
+    app.exporting = false;
+    app.refs.finish.exportButton.disabled = false;
   }
 }
 
@@ -1694,6 +1958,8 @@ function replaceState(app, state) {
     renderApp(app);
     throw error;
   }
+  // What the page shows now is what a file or the storage holds.
+  markSaved(app);
 }
 
 // Loads form data from a file. All of it is read and checked first (parseSavedText); only when it is
@@ -1725,6 +1991,7 @@ async function importFormData(app, file) {
   }
   app.changed();
   app.notify([app.t('ui.form.import.done'), ...changeNotes(app, result.notes)].join(' '));
+  focusNotice(app.refs.top);
 }
 
 function clearSavedData(app) {
@@ -1735,10 +2002,13 @@ function clearSavedData(app) {
   app.broken = null;
   app.revision = app.storage && app.keep ? 0 : -1;
   app.writeId = '';
+  app.syncMode = null;
   app.conflict = false;
   app.state = app.engine.newState({ language: app.state.language });
   renderApp(app);
+  markSaved(app);
   app.notify(app.t('ui.form.privacy.cleared'));
+  focusNotice(app.refs.top);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1755,7 +2025,8 @@ function watchPage(app) {
     if (app.doc.visibilityState === 'hidden') saveNow();
   });
   app.win.addEventListener('storage', (event) => {
-    if (event && event.key !== null && event.key !== undefined && event.key !== app.key) return;
+    const key = event ? event.key : null;
+    if (key !== null && key !== undefined && key !== app.key && key !== app.key + KEEP_SUFFIX) return;
     checkStorage(app);
   });
 }
@@ -1764,19 +2035,27 @@ function watchPage(app) {
 // is read from the page's JSON blocks when left out.
 function startForm(doc, win, data) {
   const engine = createEngine(data || readEmbeddedData(doc));
-  const storage = safeStorage(win, engine.storageKey);
-  const keep = Boolean(storage) && readKeepSetting(storage, engine.storageKey, win);
-  const loaded = keep ? loadSavedState(engine, storage, engine.storageKey) : {};
+  const key = engine.storageKey;
+  const storage = safeStorage(win, key);
+  // Keeping starts on for a web address and off for any other page (see "Keeping the answers"), and
+  // is off wherever the person turned it off.
+  const turnedOff = Boolean(storage) && keepIsOff(storage, key);
+  const keep = Boolean(storage) && !isLocalPage(win) && !turnedOff;
+  // Where keeping is off, answers in the storage are removed when the person turned keeping off (they
+  // have nothing to do there), and otherwise offered: never read without a click.
+  if (turnedOff) removeStored(storage, key);
+  const offer = Boolean(storage) && !keep && !turnedOff && hasStoredCopy(storage, key);
+  const loaded = keep ? loadSavedState(engine, storage, key) : {};
   const fresh = () => engine.newState({ language: languageFromBrowser(win) });
   const base = { doc, win, engine, storage, keep };
-  const broken = loaded.text ? setAsideBrokenData(storage, engine.storageKey, loaded.text) : keep ? readBrokenData(storage, engine.storageKey) : null;
-  let app = createApp({ ...base, state: loaded.state || fresh(), restored: Boolean(loaded.state), notes: loaded.notes, copy: loaded.copy, recovered: Boolean(loaded.text), broken });
+  const broken = loaded.text ? setAsideBrokenData(storage, key, loaded.text) : keep ? readBrokenData(storage, key) : null;
+  let app = createApp({ ...base, state: loaded.state || fresh(), offer, restored: Boolean(loaded.state), notes: loaded.notes, copy: loaded.copy, recovered: Boolean(loaded.text), broken });
   try {
     app.render();
   } catch (error) {
     // Saved data that passed the checks but still cannot be shown: put it aside and start empty.
     if (!loaded.state || !storage) throw error;
-    const text = setAsideBrokenData(storage, engine.storageKey, JSON.stringify(engine.serializeState(loaded.state, { files: false })));
+    const text = setAsideBrokenData(storage, key, JSON.stringify(engine.serializeState(loaded.state, { files: false })));
     app = createApp({ ...base, state: fresh(), recovered: true, broken: text });
     app.render();
   }

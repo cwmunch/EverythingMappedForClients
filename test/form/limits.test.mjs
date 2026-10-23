@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import test from 'node:test';
 import { webcrypto } from 'node:crypto';
-import { fakeFile, findAll, textOf } from './fake-dom.mjs';
+import { fakeFile, findAll, same, textOf } from './fake-dom.mjs';
 import { NOW, TODAY, loadBrowserScript, plain, unzipPack } from './helpers.mjs';
 import {
   KEY,
@@ -42,14 +42,14 @@ function joined(plan) {
 // ---------------------------------------------------------------------------------------------
 // M3: the form data file is never more than the loader takes
 
-test('files that would make the form data unloadable are left out of it, and the answers are kept', () => {
+test('files that would make the form data unloadable are left out of it, and the answers are kept', async () => {
   const state = newState('da');
   engine.record(state, 'A.goal').text = GOAL;
   claimedFile(state, 'film.mov', 160 * MIB).what = 'Film';
   claimedFile(state, 'scan.tif', 145 * MIB);
   const base64 = 4 * Math.ceil((160 * MIB) / 3) + 4 * Math.ceil((145 * MIB) / 3);
   assert.ok(base64 > library.IMPORT_MAX_BYTES, 'as it was: the file would be over what the loader accepts');
-  const plan = engine.exportPlan(state, '2026-10-23T12:00:00Z');
+  const plan = await engine.exportPlan(state, '2026-10-23T12:00:00Z');
   assert.equal(plan.withFiles, false);
   assert.deepEqual(plain(plan.reattach), ['film.mov', 'scan.tif']);
   assert.ok(plan.bytes < MIB, 'a few kilobytes of answers and the list');
@@ -64,44 +64,35 @@ test('files that would make the form data unloadable are left out of it, and the
   assert.deepEqual(plain(result.notes.reattach), ['film.mov', 'scan.tif'], 'and the loader names the files to attach again');
 });
 
-test('files that fit are exported with their content, and a file without content is named', () => {
+test('files that fit are exported with their content, and a file without content is named', async () => {
   const state = newState();
   engine.record(state, 'A.goal').text = GOAL;
   engine.addAsset(state, 'B.logo', { name: 'logo.svg', data: new Uint8Array([1, 2, 3]) });
-  const whole = engine.exportPlan(state, '2026-10-23T12:00:00Z');
+  const whole = await engine.exportPlan(state, '2026-10-23T12:00:00Z');
   assert.equal(whole.withFiles, true);
   assert.deepEqual(plain(whole.reattach), []);
   assert.equal(Buffer.from(engine.parseSavedText(joined(whole)).state.assets[0].data).toString('hex'), '010203');
 
   const lost = engine.addAsset(state, 'B.logo', { name: 'gone.png', data: new Uint8Array(1) });
   lost.data = null;
-  const missing = engine.exportPlan(state, '2026-10-23T12:00:00Z');
+  const missing = await engine.exportPlan(state, '2026-10-23T12:00:00Z');
   assert.equal(missing.withFiles, true, 'the file that is there still goes in');
   assert.deepEqual(plain(missing.reattach), ['gone.png']);
 });
 
-test('a file of exactly the budget is the edge: one byte more and the files stay out', () => {
+test('a file of exactly the budget is the edge: one byte more and the files stay out', async () => {
   const state = newState();
   // 225 MB of bytes make exactly 300 MB of base64, which is the budget; one byte more is over it.
   assert.equal(4 * Math.ceil((225 * MIB) / 3), library.EXPORT_FILES_BUDGET);
   claimedFile(state, 'edge.bin', 225 * MIB + 1);
-  const plan = engine.exportPlan(state, '2026-10-23T12:00:00Z');
+  const plan = await engine.exportPlan(state, '2026-10-23T12:00:00Z');
   assert.equal(plan.withFiles, false);
   assert.deepEqual(plain(plan.reattach), ['edge.bin']);
 });
 
-test('the list of files and the answers alone, at their largest, are far below what the loader takes', () => {
-  const state = newState();
+test('the list of files and the answers alone, at their largest, are far below what the loader takes', async () => {
   const quote = '"';
-  for (const question of engine.ordered) {
-    const record = engine.record(state, question.id);
-    if (question.type === 'text') record.text = quote.repeat(library.LIMITS.line.max);
-    if (question.type === 'longtext') record.text = quote.repeat(library.LIMITS.block.max);
-    if (question.type === 'list' || question.type === 'urllist') {
-      record.items = Array.from({ length: library.MAX_ROWS }, () => ({ text: quote.repeat(library.LIMITS.item.max), note: quote.repeat(library.LIMITS.item.max) }));
-    }
-  }
-  state.assets = Array.from({ length: library.MAX_ATTACHMENTS }, (unused, index) => ({
+  const asset = (index) => ({
     id: `a${index + 1}`,
     qid: 'B.logo',
     name: `${'n'.repeat(90)}-${index}.txt`,
@@ -112,10 +103,29 @@ test('the list of files and the answers alone, at their largest, are far below w
     restrictions: quote.repeat(library.LIMITS.asset.max),
     size: 1,
     data: null,
-  }));
-  const plan = engine.exportPlan(state, '2026-10-23T12:00:00Z');
-  assert.ok(plan.bytes < library.IMPORT_MAX_BYTES - library.EXPORT_FILES_BUDGET, `${plan.bytes} bytes`);
-  assert.equal(engine.restoreState(JSON.parse(joined(plan))).ok, true);
+  });
+  // The answers at their largest, and no file: what the questions alone take.
+  const answers = newState();
+  for (const question of engine.ordered) {
+    const record = engine.record(answers, question.id);
+    if (question.type === 'text') record.text = quote.repeat(library.LIMITS.line.max);
+    if (question.type === 'longtext') record.text = quote.repeat(library.LIMITS.block.max);
+    if (question.type === 'list' || question.type === 'urllist') {
+      record.items = Array.from({ length: library.MAX_ROWS }, () => ({ text: quote.repeat(library.LIMITS.item.max), note: quote.repeat(library.LIMITS.item.max) }));
+    }
+  }
+  const alone = await engine.exportPlan(answers, '2026-10-23T12:00:00Z');
+  // The files at their largest, 4,990 of them: one is measured and counted that many times.
+  const empty = await engine.exportPlan(newState(), '2026-10-23T12:00:00Z');
+  const one = newState();
+  one.assets = [asset(0)];
+  const single = (await engine.exportPlan(one, '2026-10-23T12:00:00Z')).bytes - empty.bytes;
+  const total = alone.bytes + single * library.MAX_ATTACHMENTS;
+  assert.ok(total < library.IMPORT_MAX_BYTES - library.EXPORT_FILES_BUDGET, `${total} bytes in all`);
+  // And a real file of that kind (a tenth of them) is read back by the loader.
+  const some = newState();
+  some.assets = Array.from({ length: 500 }, (unused, index) => asset(index));
+  assert.equal(engine.restoreState(JSON.parse((await engine.exportPlan(some, '2026-10-23T12:00:00Z')).parts.join(''))).ok, true);
 });
 
 test('the page saves form data without the files, says which to attach again, and the loader says it too', async () => {
@@ -126,7 +136,7 @@ test('the page saves form data without the files, says which to attach again, an
   input.fire('change');
   await until(() => page.app.state.assets.length === 2, 'the files');
   for (const asset of page.app.state.assets) asset.data = { length: 160 * MIB };
-  page.app.exportData();
+  await page.app.exportData();
   const notice = page.app.refs.finish.notices.status.textContent;
   assert.equal(notice, text('en', 'ui.form.finish.exportedNoFiles', { names: 'film.mov, scan.tif' }));
   assert.equal(page.doc.downloads.length, 1);
@@ -151,10 +161,10 @@ test('the page names a file that is not on it when form data is saved with the o
   input.fire('change');
   await until(() => page.app.state.assets.length === 2, 'the files');
   page.app.state.assets[1].data = null;
-  page.app.exportData();
+  await page.app.exportData();
   assert.equal(page.app.refs.finish.notices.status.textContent, text('da', 'ui.form.finish.exportedMissing', { names: 'kort.png' }));
   page.app.state.assets[1].data = new Uint8Array(1);
-  page.app.exportData();
+  await page.app.exportData();
   assert.equal(page.app.refs.finish.notices.status.textContent, text('da', 'ui.form.finish.exported'));
 });
 
@@ -163,7 +173,7 @@ test('a long list of names in a message ends with "and N more"', async () => {
   typeInto(part(page, 'A.goal').focus(), GOAL);
   const state = page.app.state;
   for (let index = 0; index < 12; index += 1) claimedFile(state, `f${index}.bin`, 200 * MIB);
-  page.app.exportData();
+  await page.app.exportData();
   const names = Array.from({ length: 8 }, (unused, index) => `f${index}.bin`).join(', ');
   assert.equal(page.app.refs.finish.notices.status.textContent, text('en', 'ui.form.finish.exportedNoFiles', { names: `${names} ${text('en', 'ui.form.more', { count: 4 })}` }));
 });
@@ -297,14 +307,14 @@ test('a loaded list with more than 500 rows keeps 500 and says how many were lef
 
 test('a file is refused at once when it can never fit in a pack or when the files together would not', () => {
   const state = newState();
-  const room = 498 * MIB;
+  const room = 497 * MIB;
   assert.equal(engine.attachmentProblem(state, { name: 'a.bin', size: room }), null);
   assert.equal(engine.attachmentProblem(state, { name: 'a.bin', size: room + 1 }).key, 'ui.form.files.tooBig');
   assert.equal(engine.attachmentProblem(state, { name: 'a.bin', size: 500 * MIB }).key, 'ui.form.files.tooBig');
   claimedFile(state, 'one.bin', 400 * MIB);
   assert.equal(engine.attachedBytes(state), 400 * MIB);
-  assert.equal(engine.attachmentProblem(state, { name: 'two.bin', size: 98 * MIB }), null, 'together exactly what a pack can hold');
-  assert.deepEqual(plain(engine.attachmentProblem(state, { name: 'two.bin', size: 98 * MIB + 1 })), { key: 'ui.form.files.totalTooBig', params: { name: 'two.bin', limit: '498 MB' } });
+  assert.equal(engine.attachmentProblem(state, { name: 'two.bin', size: 97 * MIB }), null, 'together exactly what a pack can hold');
+  assert.deepEqual(plain(engine.attachmentProblem(state, { name: 'two.bin', size: 97 * MIB + 1 })), { key: 'ui.form.files.totalTooBig', params: { name: 'two.bin', limit: '497 MB' } });
   const without = newState();
   claimedFile(without, 'gone.bin', 1).data = null;
   assert.equal(engine.attachedBytes(without), 0, 'a file without content takes no room');
@@ -319,7 +329,7 @@ test('the page does not read a file that does not fit, and says why next to the 
   input.files = [unread, small];
   input.fire('change');
   await until(() => page.app.state.assets.length === 2, 'the small file');
-  assert.equal(part(page, 'B.logo').notices.alert.textContent, text('en', 'ui.form.files.totalTooBig', { name: 'next.bin', limit: '498 MB' }));
+  assert.equal(part(page, 'B.logo').notices.alert.textContent, text('en', 'ui.form.files.totalTooBig', { name: 'next.bin', limit: '497 MB' }));
   assert.deepEqual(plain(page.app.state.assets.map((asset) => asset.name)), ['existing.bin', 'small.txt']);
 });
 
@@ -444,7 +454,7 @@ test('a pack built with crypto.subtle is the same bytes as one built without it'
   assert.ok(first.equals(second));
 });
 
-test('the texts of these limits are in both languages', () => {
+test('the texts of these limits are in both languages', async () => {
   for (const lang of ['da', 'en']) {
     for (const key of ['finish.exportedNoFiles', 'finish.exportedMissing', 'more', 'import.reattach', 'import.droppedItems', 'import.droppedFiles', 'files.totalTooBig', 'list.full', 'problem.tooManyRows']) {
       assert.ok(data.dictionaries[lang][`ui.form.${key}`], `${lang} ${key}`);
@@ -482,18 +492,18 @@ test('removing a file puts the focus on the next card, and on the previous one w
   removeButtonOf(cardsOf(page)[1]).click();
   assert.deepEqual(plain(page.app.state.assets.map((asset) => asset.name)), ['a.txt', 'c.txt']);
   let cards = cardsOf(page);
-  assert.equal(page.doc.activeElement, firstFieldOf(cards[1]), 'the card that moved up');
+  same(page.doc.activeElement, firstFieldOf(cards[1]), 'the card that moved up');
   removeButtonOf(cards[1]).click();
   cards = cardsOf(page);
   assert.equal(cards.length, 1);
-  assert.equal(page.doc.activeElement, firstFieldOf(cards[0]), 'the last card went, so the one before it');
+  same(page.doc.activeElement, firstFieldOf(cards[0]), 'the last card went, so the one before it');
 });
 
 test('removing the only file puts the focus on the field for attaching files', async () => {
   const { page, input } = await pageWithFiles(['only.txt']);
   removeButtonOf(cardsOf(page)[0]).click();
   assert.equal(page.app.state.assets.length, 0);
-  assert.equal(page.doc.activeElement, input);
+  same(page.doc.activeElement, input);
 });
 
 test('removing a file from one question does not move the focus into another', async () => {
@@ -501,17 +511,17 @@ test('removing a file from one question does not move the focus into another', a
   const other = inputsOf(part(page, 'B.logo').root, 'file')[0];
   assert.ok(other);
   removeButtonOf(cardsOf(page)[0]).click();
-  assert.equal(page.doc.activeElement, firstFieldOf(cardsOf(page)[0]));
+  same(page.doc.activeElement, firstFieldOf(cardsOf(page)[0]));
 });
 
 test('the check at attaching counts what the answer files take, as the build does', () => {
   const state = newState();
   claimedFile(state, 'big.bin', 400 * MIB);
-  assert.equal(engine.attachmentProblem(state, { name: 'two.bin', size: 98 * MIB }, 0), null);
-  assert.equal(engine.attachmentProblem(state, { name: 'two.bin', size: 98 * MIB }, 1).key, 'ui.form.files.totalTooBig', 'one byte of answers is too much at the edge');
-  assert.equal(engine.attachmentProblem(state, { name: 'two.bin', size: 98 * MIB - 20000 }, 20000), null);
-  assert.equal(engine.attachmentProblem(newState(), { name: 'one.bin', size: 498 * MIB }, 20000).key, 'ui.form.files.tooBig');
-  assert.equal(engine.attachmentProblem(newState(), { name: 'one.bin', size: 498 * MIB }, 20000).params.limit, '498 MB', 'the message names the size of a pack minus its own files');
+  assert.equal(engine.attachmentProblem(state, { name: 'two.bin', size: 97 * MIB }, 0), null);
+  assert.equal(engine.attachmentProblem(state, { name: 'two.bin', size: 97 * MIB }, 1).key, 'ui.form.files.totalTooBig', 'one byte of answers is too much at the edge');
+  assert.equal(engine.attachmentProblem(state, { name: 'two.bin', size: 97 * MIB - 20000 }, 20000), null);
+  assert.equal(engine.attachmentProblem(newState(), { name: 'one.bin', size: 497 * MIB }, 20000).key, 'ui.form.files.tooBig');
+  assert.equal(engine.attachmentProblem(newState(), { name: 'one.bin', size: 497 * MIB }, 20000).params.limit, '497 MB', 'the message names the size of a pack minus its own files');
 });
 
 test('a pack that was let through at attaching builds, also at the edge with the answers counted', async () => {
@@ -520,7 +530,7 @@ test('a pack that was let through at attaching builds, also at the edge with the
   page.app.flush();
   const used = page.app.analysis.files.reduce((sum, file) => sum + library.encodeUtf8(file.text).length, 0) + library.encodeUtf8(page.app.analysis.assetsText).length;
   assert.ok(used > 1000 && used < 100000, `${used} bytes of answers`);
-  const room = 498 * MIB - used;
+  const room = 497 * MIB - used;
   const state = page.app.state;
   claimedFile(state, 'edge.bin', room - 1);
   const fits = engine.attachmentProblem(state, { name: 'x.bin', size: 1 }, used);

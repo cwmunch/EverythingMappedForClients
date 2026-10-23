@@ -211,3 +211,14 @@ test('what the person typed is never sent raw to the terminal in an error messag
     assert.ok(result.stderr.includes(picture), JSON.stringify(args));
   }
 });
+
+test('-v is a top-level shortcut for the version, not an option of a command', async (t) => {
+  const top = await runCli(['-v']);
+  assert.equal(top.code, 0);
+  for (const command of ['install', 'uninstall']) {
+    const result = await runCli([command, '-v', '--claude']);
+    assert.equal(result.code, 2, command);
+    assert.match(result.stderr, /Unknown option: -v/);
+  }
+  assert.ok(t);
+});

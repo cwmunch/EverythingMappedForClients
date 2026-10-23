@@ -12,12 +12,15 @@ export function toSlashes(relative) {
   return relative.split(path.sep).join('/');
 }
 
-// files: [{ relative, sha256 }] and dirs: [relative], with native separators.
-export function buildRecord(files, dirs) {
+// files: [{ relative, sha256 }] and dirs: [relative], with native separators. ancestors: the folders
+// above the skill folder that the install created, as paths from the base folder with forward slashes
+// (for example ".claude" and ".claude/skills"), so that uninstall can remove them again when they are empty.
+export function buildRecord(files, dirs, ancestors = []) {
   return {
     schema: RECORD_SCHEMA,
     files: files.map((file) => ({ path: toSlashes(file.relative), sha256: file.sha256 })),
     dirs: dirs.map(toSlashes),
+    ancestors,
   };
 }
 
@@ -39,7 +42,8 @@ function isValidRecord(data) {
   const filesOk = data.files.every(
     (file) => typeof file === 'object' && file !== null && isPlainRelative(file.path) && /^[0-9a-f]{64}$/.test(file.sha256),
   );
-  return filesOk && data.dirs.every(isPlainRelative);
+  const ancestorsOk = data.ancestors === undefined || (Array.isArray(data.ancestors) && data.ancestors.every(isPlainRelative));
+  return filesOk && data.dirs.every(isPlainRelative) && ancestorsOk;
 }
 
 // Reads and checks the record of an installed folder. Throws CliError when there is none
@@ -56,5 +60,6 @@ export function readRecord(folder) {
     throw new CliError('ui.install.error.badRecord', { path: folder, record: RECORD_NAME });
   }
   if (!isValidRecord(data)) throw new CliError('ui.install.error.badRecord', { path: folder, record: RECORD_NAME });
-  return { files: data.files, dirs: data.dirs };
+  // Records written before ancestors were recorded have none: nothing above the skill folder is removed for them.
+  return { files: data.files, dirs: data.dirs, ancestors: data.ancestors ?? [] };
 }

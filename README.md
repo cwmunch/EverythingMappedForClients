@@ -105,7 +105,7 @@ npx github:cwmunch/EverythingMappedForClients uninstall -g
 npx github:cwmunch/EverythingMappedForClients uninstall -g --local
 ```
 
-It removes only the files the installer wrote. They are listed in a small file called `.everything-mapped-install.json` inside the `everything-mapped` folder. Files you added or changed there stay, and the tool names each of them; if any stay, the folder and the small list stay too, so you can run uninstall again later. Your answers in `docs/` stay where they are. Folders whose names start with a dot are hidden by default on macOS and Linux. In Finder, press `Cmd+Shift+.` to show them.
+It removes only the files the installer wrote. They are listed in a small file called `.everything-mapped-install.json` inside the `everything-mapped` folder. Files you added or changed there stay, and the tool names each of them; if any stay, the folder and the small list stay too, so you can run uninstall again later. If the install had to create `.claude/skills/` or `.agents/skills/` (or the folders above them), uninstall removes them again once they are empty; folders that were there before are never removed. Your answers in `docs/` stay where they are. Folders whose names start with a dot are hidden by default on macOS and Linux. In Finder, press `Cmd+Shift+.` to show them.
 
 ## Pin a release
 
@@ -124,6 +124,8 @@ The quotes stop some shells from reading `#` as a special character.
 If you do not use Claude Code or Codex, use the form instead. It is one file in this repository, [docs/form/index.html](docs/form/index.html). Download it, or ask the person who gave you this kit to send it to you, and open it in a web browser. It asks the same questions, needs no account and no internet connection, and makes the same zip file when you are done. Nothing leaves your computer until you send the zip yourself.
 
 The form cannot ask follow-up questions the way the interviewer can, so add a little extra detail to your answers.
+
+When you open the form from a file on your computer, it does not keep your answers unless you tick the box "Keep my answers in this browser". Other pages opened from your computer could read and change answers kept that way, so tick it only on a computer you trust. If you do not tick it, download your answers or the zip before you close the tab; the browser warns you if there are answers you have not saved or downloaded.
 
 ## What you get
 
@@ -299,7 +301,7 @@ npx github:cwmunch/EverythingMappedForClients uninstall -g
 npx github:cwmunch/EverythingMappedForClients uninstall -g --local
 ```
 
-Det fjerner kun de filer, installationsprogrammet har skrevet. De står på en lille liste i filen `.everything-mapped-install.json` inde i mappen `everything-mapped`. Filer, du har tilføjet eller ændret dér, bliver liggende, og værktøjet nævner hver enkelt af dem. Bliver der noget liggende, bliver mappen og den lille liste også, så du kan køre uninstall igen senere. Dine svar i `docs/` bliver liggende. Mapper, hvis navn starter med et punktum, er skjulte som standard på macOS og Linux. I Finder kan du vise dem med `Cmd+Shift+.`.
+Det fjerner kun de filer, installationsprogrammet har skrevet. De står på en lille liste i filen `.everything-mapped-install.json` inde i mappen `everything-mapped`. Filer, du har tilføjet eller ændret dér, bliver liggende, og værktøjet nævner hver enkelt af dem. Bliver der noget liggende, bliver mappen og den lille liste også, så du kan køre uninstall igen senere. Måtte installationen oprette `.claude/skills/` eller `.agents/skills/` (eller mapperne over dem), fjerner uninstall dem igen, når de er tomme; mapper, der var der i forvejen, bliver aldrig fjernet. Dine svar i `docs/` bliver liggende. Mapper, hvis navn starter med et punktum, er skjulte som standard på macOS og Linux. I Finder kan du vise dem med `Cmd+Shift+.`.
 
 ## Brug en bestemt version
 
@@ -318,6 +320,8 @@ Anførselstegnene forhindrer, at nogle shells læser `#` som et specialtegn.
 Bruger du ikke Claude Code eller Codex, kan du bruge formularen i stedet. Den er én fil i dette repository, [docs/form/index.html](docs/form/index.html). Hent den, eller bed den, der gav dig kittet, om at sende den til dig, og åbn den i en webbrowser. Den stiller de samme spørgsmål, kræver hverken konto eller internetforbindelse og laver den samme zip-fil, når du er færdig. Intet forlader din computer, før du selv sender zip-filen.
 
 Formularen kan ikke stille opfølgende spørgsmål, sådan som intervieweren kan, så skriv gerne lidt mere i dine svar.
+
+Når du åbner formularen fra en fil på din computer, gemmer den ikke dine svar, medmindre du sætter hak i feltet "Behold mine svar i denne browser". Andre sider, der åbnes fra din computer, kan læse og ændre svar, der er gemt på den måde, så sæt kun hak på en computer, du stoler på. Sætter du ikke hak, så hent dine svar eller zip-filen, før du lukker fanen; browseren advarer dig, hvis der er svar, du ikke har gemt eller hentet.
 
 ## Indholdet af mappen
 

@@ -14,4 +14,10 @@ export function sayLeftInPlace(io, t, folder, result) {
   for (const relative of result.changed) say(io, t('ui.install.remove.changed', { path: relative }));
   for (const relative of result.kept) say(io, t('ui.install.remove.kept', { path: relative }));
   if (!result.folderRemoved) say(io, t('ui.install.remove.keptFolder', { path: folder }));
+  for (const removed of result.removedFolders ?? []) say(io, t('ui.install.remove.removedEmpty', { path: removed }));
+}
+
+// Names a backup that an earlier failed install left behind. Nothing is deleted: the person decides.
+export function sayStaleBackups(io, t, backups) {
+  for (const backup of backups) say(io, t('ui.install.warn.staleBackup', { path: backup }));
 }

@@ -2,7 +2,7 @@
 // Output is canonical: LF line endings, one blank line between blocks. This file must stay pure.
 
 import { ANSWER_STATUSES, canonicalBody, effectiveLevel } from './rules.mjs';
-import { MAX_CELL_CHARS, MAX_LISTED_ITEMS, decodeMarkup, defuseMarkup, encodeMarkup, escapePipes, joinLines, normalizeNewlines, oneLine, showHiddenCharacters, toToken, truncateText } from './util.mjs';
+import { MAX_CELL_CHARS, MAX_LISTED_ITEMS, decodeMarkup, defuseMarkup, describeAssetName, encodeMarkup, escapePipes, joinLines, normalizeNewlines, oneLine, showHiddenCharacters, toToken, truncateText } from './util.mjs';
 
 const GENERATED_START = '<!-- generated:start -->';
 const GENERATED_END = '<!-- generated:end -->';
@@ -111,6 +111,30 @@ export function renderAssets(rows, i18n) {
   return `${lines.join('\n')}\n`;
 }
 
+// Why a name is refused by the zip, by the code of nameProblems or entryNameProblems. The keys are
+// written out so that the texts of every reason can be found and checked.
+const NAME_REASON_KEYS = {
+  empty: 'ui.nameReason.empty',
+  notText: 'ui.nameReason.notText',
+  backslash: 'ui.nameReason.backslash',
+  notRelative: 'ui.nameReason.notRelative',
+  forbiddenCharacter: 'ui.nameReason.forbiddenCharacter',
+  emptyPart: 'ui.nameReason.emptyPart',
+  dotPart: 'ui.nameReason.dotPart',
+  endsWithDotOrSpace: 'ui.nameReason.endsWithDotOrSpace',
+  deviceName: 'ui.nameReason.deviceName',
+  partTooLong: 'ui.nameReason.partTooLong',
+  pathTooLong: 'ui.nameReason.pathTooLong',
+  duplicate: 'ui.nameReason.duplicate',
+  fileAndFolder: 'ui.nameReason.fileAndFolder',
+};
+
+// The reason for a refused name as a clause ("the name is reserved on Windows"). `other` is the
+// name that it clashes with, for the reasons duplicate and fileAndFolder.
+export function nameReasonText(i18n, code, other = '') {
+  return Object.hasOwn(NAME_REASON_KEYS, code) ? i18n.t(NAME_REASON_KEYS[code], { other }) : String(code);
+}
+
 // The message for a flag, in the language of the dictionary. Question flags get {label}; a file
 // flag gets its path as {label}. The text is not made safe for printing: print it through
 // sanitizeForTerminal.
@@ -123,6 +147,10 @@ export function describeFlag(flag, i18n) {
   } else if (params.label === undefined && params.path !== undefined) {
     params.label = params.path;
   }
+  // A file name is shown the same way everywhere: what cannot be seen is written as <U+XXXX>.
+  if (flag.id.startsWith('assets.') && typeof params.file === 'string') params.file = describeAssetName(params.file);
+  if (typeof params.other === 'string') params.other = describeAssetName(params.other);
+  if (flag.id === 'assets.notPackable') params.reason = nameReasonText(i18n, params.reasonCode, params.other ?? '');
   return i18n.t(`flag.${flag.id}`, params);
 }
 

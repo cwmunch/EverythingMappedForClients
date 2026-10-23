@@ -558,7 +558,7 @@ test('saved data with huge cells is cleaned on load and the page works', () => {
   assert.equal(page.app.refs.top.alert.textContent, '');
 });
 
-test('the saved data lives under a key named after the schema version, and data under other keys is not read', () => {
+test('the saved data lives under a key named after the schema version, and data under other keys is not read or written over', () => {
   assert.equal(KEY, `emfc.${schema.schema}.form`);
   const storage = createMemoryStorage();
   storage.setItem('emfc.form.v1', JSON.stringify(hugeCells({ answers: { 'A.budget': { text: 'old' } } })));
@@ -569,7 +569,7 @@ test('the saved data lives under a key named after the schema version, and data 
   page.fake.runTimers();
   assert.ok(storage.getItem(KEY));
   assert.equal(JSON.parse(storage.getItem(KEY)).answers['A.budget'].text, '10');
-  assert.equal(JSON.parse(storage.getItem('emfc.form.v1')).answers['A.budget'].text, 'old', 'other keys are left alone');
+  assert.equal(JSON.parse(storage.getItem('emfc.form.v1')).answers['A.budget'].text, 'old', 'saving leaves other keys alone; only clearing and removing take the key of an earlier version away (see hardening.test.mjs)');
 });
 
 test('when the page cannot be refreshed it says so, and the way out is still on the page', () => {
@@ -631,6 +631,7 @@ test('the button that clears saved data works even when the form cannot start', 
   const storage = createMemoryStorage();
   storage.setItem(KEY, 'broken');
   storage.setItem(`${KEY}.broken`, 'older');
+  storage.setItem('emfc.form.v1', 'an earlier version');
   storage.setItem('something-else', 'kept');
   const fake = createFakeWindow({ storage });
   fake.win.document = doc;
@@ -640,6 +641,7 @@ test('the button that clears saved data works even when the form cannot start', 
   button.click();
   assert.equal(storage.getItem(KEY), null);
   assert.equal(storage.getItem(`${KEY}.broken`), null);
+  assert.equal(storage.getItem('emfc.form.v1'), null, 'the key of an earlier version goes too');
   assert.equal(storage.getItem('something-else'), 'kept');
   assert.equal(fake.win.reloads, 1);
 
@@ -670,7 +672,7 @@ test('a file that is renamed is shown with the name it got and why; a file that 
   assert.ok(textOf(cards[1]).includes(text('en', 'ui.form.files.renamed', { from: 'logo<U+202E>.png', name: 'logo.png' })), 'a hidden character is made visible in the old name');
   assert.ok(!textOf(cards[2]).includes(text('en', 'ui.form.files.renamed', { from: 'plain.png', name: 'plain.png' })), 'a name that did not change is not remarked on');
   assert.equal(page.app.state.assets[2].renamedFrom, '');
-  assert.equal(part(page, 'B.logo').notices.alert.textContent, text('en', 'ui.form.files.tooBig', { name: 'huge.mov', limit: '498 MB' }));
+  assert.equal(part(page, 'B.logo').notices.alert.textContent, text('en', 'ui.form.files.tooBig', { name: 'huge.mov', limit: '497 MB' }));
 });
 
 test('no more files than a pack can hold are accepted', () => {
@@ -679,8 +681,8 @@ test('no more files than a pack can hold are accepted', () => {
   assert.deepEqual(plain(engine.attachmentProblem(state, { name: 'one-more.txt', size: 1 })), { key: 'ui.form.files.tooMany', params: { name: 'one-more.txt', max: library.PACK_MAX_ENTRIES - 10 } });
   state.assets.pop();
   assert.equal(engine.attachmentProblem(state, { name: 'last.txt', size: 1 }), null);
-  const room = 498 * 1024 * 1024;
-  assert.equal(engine.attachmentProblem(state, { name: 'big.bin', size: room }), null, 'a pack needs 2 MB for its own files; the rest is for attached files');
+  const room = 497 * 1024 * 1024;
+  assert.equal(engine.attachmentProblem(state, { name: 'big.bin', size: room }), null, 'a pack needs 3 MB for its own files and what is not known at attaching; the rest is for attached files');
   assert.equal(engine.attachmentProblem(state, { name: 'bigger.bin', size: room + 1 }).key, 'ui.form.files.tooBig');
   assert.equal(engine.attachmentProblem(state, { name: 'whole.bin', size: 500 * 1024 * 1024 }).key, 'ui.form.files.tooBig', 'a file of 500 MB can never fit in a pack');
 });
@@ -698,7 +700,7 @@ test('attaching a file tells the person right away that files are not kept in th
   input.fire('change');
   await until(() => page.app.state.assets.length === 2, 'the second file');
   assert.equal(part(page, 'B.logo').notices.status.textContent, text('da', 'ui.form.files.notSaved'));
-  assert.equal(part(page, 'B.logo').notices.alert.textContent, text('da', 'ui.form.files.tooBig', { name: 'huge.bin', limit: '498 MB' }));
+  assert.equal(part(page, 'B.logo').notices.alert.textContent, text('da', 'ui.form.files.tooBig', { name: 'huge.bin', limit: '497 MB' }));
 });
 
 // ---------------------------------------------------------------------------------------------
@@ -713,14 +715,14 @@ test('base64 is made in pieces and agrees with node for big files', () => {
   assert.deepEqual(Buffer.from(library.base64ToBytes(parts.join(''))), Buffer.from(bytes));
 });
 
-test('the form data is exported in pieces that make the same JSON as the saved state', () => {
+test('the form data is exported in pieces that make the same JSON as the saved state', async () => {
   const state = newState('da');
   engine.record(state, 'A.goal').text = 'Et mål';
   const big = new Uint8Array(crypto.randomBytes(3 * 1024 * 1024));
   engine.addAsset(state, 'B.logo', { name: 'big.bin', data: big }).what = 'Stor';
   engine.addAsset(state, 'B.logo', { name: 'small.bin', data: new Uint8Array([1, 2]) });
   state.assets[1].data = null;
-  const parts = engine.exportParts(state, '2026-10-23T12:00:00Z');
+  const parts = await engine.exportParts(state, '2026-10-23T12:00:00Z');
   assert.ok(parts.length > 15, 'the file is in many pieces');
   assert.ok(parts.every((piece) => typeof piece === 'string' && piece.length <= 4 * 65536 + 400), 'no piece is a huge string');
   const joined = JSON.parse(parts.join(''));
@@ -728,7 +730,7 @@ test('the form data is exported in pieces that make the same JSON as the saved s
   assert.equal(Buffer.from(engine.restoreState(joined).state.assets[0].data).equals(Buffer.from(big)), true);
 });
 
-test('an export that fails says that the data is too large, in the chosen language', () => {
+test('an export that fails says that the data is too large, in the chosen language', async () => {
   const page = openForm({ language: 'da' });
   page.app.engine.exportPlan = () => {
     throw new RangeError('Invalid string length');
@@ -736,7 +738,7 @@ test('an export that fails says that the data is too large, in the chosen langua
   const silent = console.error;
   console.error = () => {};
   try {
-    page.app.exportData();
+    await page.app.exportData();
   } finally {
     console.error = silent;
   }

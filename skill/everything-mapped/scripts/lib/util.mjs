@@ -152,6 +152,9 @@ export const MAX_ASSET_FILES = 50000;
 export const MAX_FLAGS_PER_KIND = 100;
 export const MAX_LISTED_ITEMS = 200;
 export const MAX_CELL_CHARS = 300;
+// A name, a role, an owner or a recipient is a few words; a person list line is a few dozen people.
+export const MAX_FIELD_CHARS = 200;
+export const MAX_RESPONDENT_LINE_CHARS = 5000;
 
 // Cuts text at max characters and adds "...". A surrogate pair is never cut in two.
 export function truncateText(text, max) {
@@ -180,23 +183,35 @@ export function isPackFile(relativePath) {
 export const CONTROL_CHARACTER_RANGES = [[0, 8], [11, 12], [14, 31], [127, 159]];
 
 // Characters that are refused in answer input, in respondent, recipient, notes, asset
-// descriptions and asset file names, and flagged in an existing pack, because they hide text or
-// change the reading direction: U+061C, U+180E, zero-width space U+200B, the bidirectional
-// embeddings, overrides and isolates (U+202A-202E, U+2066-2069), word joiner and invisible
-// operators (U+2060-2064), the byte order mark U+FEFF anywhere, interlinear annotation marks
-// (U+FFF9-FFFB) and the tag characters (U+E0000-E007F). [from, to] ranges of code points.
-// Legitimate invisible characters (U+200C, U+200D, U+200E, U+200F, U+00AD, variation selectors,
-// U+202F and other white space) are not in this list; stored text keeps them.
+// descriptions and asset file names, and flagged in an existing pack, because they hide text,
+// change the reading direction or show as nothing. The set is the Unicode property
+// Default_Ignorable_Code_Point without the characters that legitimate text needs (see below), plus
+// the interlinear annotation marks:
+//   U+034F, U+061C, U+115F-1160, U+17B4-17B5, U+180B-180F, U+200B, the bidirectional embeddings
+//   and overrides U+202A-202E, U+2060-206F (word joiner, invisible operators, isolates and the
+//   deprecated format characters), U+3164, the byte order mark U+FEFF, U+FFA0, U+FFF0-FFF8,
+//   U+FFF9-FFFB, U+1BCA0-1BCA3, U+1D173-1D17A and the tag and variation selector supplement
+//   U+E0000-E0FFF.
+// Not in the list, because stored text keeps them: ZWJ U+200D and ZWNJ U+200C (emoji and several
+// scripts), the soft hyphen U+00AD, LRM U+200E, RLM U+200F, the variation selectors U+FE00-FE0F,
+// U+202F and other white space. [from, to] ranges of code points.
 export const HIDDEN_CHARACTER_RANGES = [
+  [0x034f, 0x034f],
   [0x061c, 0x061c],
-  [0x180e, 0x180e],
+  [0x115f, 0x1160],
+  [0x17b4, 0x17b5],
+  [0x180b, 0x180f],
   [0x200b, 0x200b],
   [0x202a, 0x202e],
-  [0x2060, 0x2064],
-  [0x2066, 0x2069],
+  [0x2060, 0x206f],
+  [0x3164, 0x3164],
   [0xfeff, 0xfeff],
+  [0xffa0, 0xffa0],
+  [0xfff0, 0xfff8],
   [0xfff9, 0xfffb],
-  [0xe0000, 0xe007f],
+  [0x1bca0, 0x1bca3],
+  [0x1d173, 0x1d17a],
+  [0xe0000, 0xe0fff],
 ];
 
 // Characters that are fine in stored text but are shown as <U+XXXX> when printed, because they
@@ -253,22 +268,44 @@ export function showHiddenCharacters(text) {
   return parts.join('');
 }
 
+// Text that a person may have written with line breaks and tabs, with every other control and
+// hidden character written as <U+XXXX>. Used for text that is carried over unchanged (notes in the
+// state file), so that nothing hidden is ever written back.
+export function neutralizeHiddenCharacters(text) {
+  const value = String(text ?? '');
+  if (!hasHiddenCharacters(value)) return value;
+  const parts = [];
+  for (const char of value) {
+    const code = char.codePointAt(0);
+    parts.push(code === 9 || code === 10 || code === 13 ? char : showHiddenCharacters(char));
+  }
+  return parts.join('');
+}
+
 // True for a file name that the assets table can hold exactly: no control or hidden character,
-// no backslash, and no space at either end. Other names, with any kind of white space or
-// invisible joiner, are stored as they are.
+// no line or paragraph separator (they end a row), no backslash, and no space at either end.
+// Other names, with any kind of white space or invisible joiner, are stored as they are.
 export function isStorableAssetName(name) {
   const value = String(name ?? '');
   if (value === '' || value.startsWith(' ') || value.endsWith(' ') || value.includes(String.fromCharCode(92))) return false;
   for (const char of value) {
     const code = char.codePointAt(0);
-    if (code < 32 || isControlCode(code) || isHiddenCode(code)) return false;
+    if (code < 32 || isControlCode(code) || isHiddenCode(code) || code === 0x2028 || code === 0x2029) return false;
   }
   return true;
 }
 
-// A file name for a message, with the characters that cannot be seen written as <U+XXXX>.
+// A file name for a message: every character that a terminal could show as nothing or as
+// something else (control characters, hidden characters, joiners, direction marks, the soft hyphen,
+// line and paragraph separators) and a space at either end are written as <U+XXXX>. This is the one
+// way a file name is shown.
 export function describeAssetName(name) {
-  let shown = showHiddenCharacters(name);
+  const parts = [];
+  for (const char of String(name ?? '')) {
+    const code = char.codePointAt(0);
+    parts.push(code < 32 || isControlCode(code) || isDisplaySpoofing(code) ? codeMarker(code) : char);
+  }
+  let shown = parts.join('');
   if (shown.startsWith(' ')) shown = `${codeMarker(32)}${shown.slice(1)}`;
   if (shown.endsWith(' ')) shown = `${shown.slice(0, -1)}${codeMarker(32)}`;
   return shown;
@@ -319,6 +356,173 @@ export function stringifyJson(value) {
     parts.push(code >= 127 && (code <= 159 || isDisplaySpoofing(code)) ? unicodeEscape(code) : char);
   }
   return parts.join('');
+}
+
+// ---------------------------------------------------------------------------------------------
+// Names in the pack and in the zip (FORMAT.md section 15)
+
+// The tools that open the zip refuse longer names.
+export const MAX_NAME_PART_BYTES = 255;
+export const MAX_NAME_CHARACTERS = 240;
+
+// Windows treats these names as devices, with or without an extension (nul.png is the device too).
+// The superscript digits (code points 185, 178, 179) are reserved as well.
+const PACK_DEVICE_NAMES = /^(?:CON|PRN|AUX|NUL|CONIN\$|CONOUT\$|COM[1-9\xb9\xb2\xb3]|LPT[1-9\xb9\xb2\xb3])$/;
+// Characters Windows cannot store in a file name.
+const PACK_WINDOWS_CHARACTER = /[<>:"|?*]/;
+// Besides control and hidden characters, a name may not hold the joiners and direction marks
+// U+200C-200F or the line and paragraph separators, which make a name look like another one.
+const PACK_NAME_EXTRA_RANGES = [[0x200c, 0x200f], [0x2028, 0x2029]];
+
+function isPackNameForbiddenCode(code) {
+  return code < 32 || isControlCode(code) || isHiddenCode(code) || inRanges(code, PACK_NAME_EXTRA_RANGES);
+}
+
+// Printable ASCII only: such a name needs none of the per-character work below.
+const PRINTABLE_ASCII = /^[ -~]*$/;
+
+function isWellFormedString(text) {
+  if (PRINTABLE_ASCII.test(text)) return true;
+  for (let index = 0; index < text.length; index += 1) {
+    const unit = text.charCodeAt(index);
+    if (unit >= 0xd800 && unit <= 0xdbff) {
+      const next = text.charCodeAt(index + 1);
+      if (!(next >= 0xdc00 && next <= 0xdfff)) return false;
+      index += 1;
+    } else if (unit >= 0xdc00 && unit <= 0xdfff) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function packNameBytes(text) {
+  if (PRINTABLE_ASCII.test(text)) return text.length;
+  let bytes = 0;
+  for (const char of text) {
+    const code = char.codePointAt(0);
+    if (code < 0x80) bytes += 1;
+    else if (code < 0x800) bytes += 2;
+    else if (code < 0x10000) bytes += 3;
+    else bytes += 4;
+  }
+  return bytes;
+}
+
+function hasPackNameForbiddenCharacter(name) {
+  if (PRINTABLE_ASCII.test(name)) return PACK_WINDOWS_CHARACTER.test(name);
+  for (const char of name) {
+    if (PACK_WINDOWS_CHARACTER.test(char) || isPackNameForbiddenCode(char.codePointAt(0))) return true;
+  }
+  return false;
+}
+
+// Two names that differ only in case, or in how an accent is written, are one file on Windows and
+// macOS. This is the key that tells.
+export function foldPackName(name) {
+  return String(name).normalize('NFC').toLowerCase();
+}
+
+// The reasons for one part of a name (between two slashes), in the order the zip checks them.
+function partNameProblems(part) {
+  if (part === '') return [{ code: 'emptyPart', part }];
+  if (part === '.' || part === '..') return [{ code: 'dotPart', part }];
+  const problems = [];
+  if (/[. ]$/.test(part)) problems.push({ code: 'endsWithDotOrSpace', part });
+  if (PACK_DEVICE_NAMES.test(part.split('.')[0].trimEnd().toUpperCase())) problems.push({ code: 'deviceName', part });
+  if (packNameBytes(part) > MAX_NAME_PART_BYTES) problems.push({ code: 'partTooLong', part });
+  return problems;
+}
+
+// partCache (a Map from a part to its problems) saves the work when many names share their folders.
+function collectNameProblems(name, partCache) {
+  if (typeof name !== 'string' || name === '') return [{ code: 'empty' }];
+  const ascii = PRINTABLE_ASCII.test(name);
+  if (!ascii && !isWellFormedString(name)) return [{ code: 'notText' }];
+  const problems = [];
+  if (name.includes(String.fromCharCode(92))) problems.push({ code: 'backslash' });
+  if (name.startsWith('/') || /^[A-Za-z]:/.test(name)) problems.push({ code: 'notRelative' });
+  if (hasPackNameForbiddenCharacter(name)) problems.push({ code: 'forbiddenCharacter' });
+  for (const part of name.split('/')) {
+    let found = partCache.get(part);
+    if (found === undefined) {
+      found = partNameProblems(part);
+      partCache.set(part, found);
+    }
+    for (const problem of found) problems.push(problem);
+  }
+  if ((ascii ? name.length : Array.from(name).length) > MAX_NAME_CHARACTERS) problems.push({ code: 'pathTooLong' });
+  return problems;
+}
+
+// Every reason the zip would refuse one entry name (a path from the pack root, forward slashes),
+// in the order the zip checks them: [{ code, part? }], empty when the name is fine. Codes: empty,
+// notText, backslash, notRelative, forbiddenCharacter, emptyPart, dotPart, endsWithDotOrSpace,
+// deviceName, partTooLong and pathTooLong. A part-level code names the part.
+export function nameProblems(name) {
+  return collectNameProblems(name, new Map());
+}
+
+// The problems of a whole list of entry names: [{ name, code, part?, other? }] in the order of the
+// list. Besides the problems of each name (see nameProblems) it finds a name that is the same as an
+// earlier one apart from case or accent (code duplicate, other: the earlier name) and a name that is
+// a file where another entry needs a folder of that name (code fileAndFolder, other: an entry
+// inside the folder).
+export function entryNameProblems(names) {
+  const list = names.map((name) => String(name));
+  const keys = list.map(foldPackName);
+  const firstByKey = new Map();
+  const insideFolder = new Map();
+  const knownFolders = new Set();
+  for (const [index, name] of list.entries()) {
+    const key = keys[index];
+    if (!firstByKey.has(key)) firstByKey.set(key, name);
+    const parts = name.split('/');
+    for (let length = 1; length < parts.length; length += 1) {
+      const folder = parts.slice(0, length).join('/');
+      if (knownFolders.has(folder)) continue;
+      knownFolders.add(folder);
+      const folderKey = foldPackName(folder);
+      if (!insideFolder.has(folderKey)) insideFolder.set(folderKey, name);
+    }
+  }
+  const partCache = new Map();
+  const problems = [];
+  const seen = new Set();
+  for (const [index, name] of list.entries()) {
+    for (const problem of collectNameProblems(name, partCache)) problems.push({ name, ...problem });
+    const key = keys[index];
+    if (seen.has(key)) problems.push({ name, code: 'duplicate', other: firstByKey.get(key) });
+    seen.add(key);
+    if (insideFolder.has(key)) problems.push({ name, code: 'fileAndFolder', other: insideFolder.get(key) });
+  }
+  return problems;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Setext headings in free text
+
+// In markdown a line of = or - below a line of text turns that line into a heading. Free text is
+// stored with one more backslash in front of such a line, so it is text and nothing else, and the
+// reader takes the backslash off again. A line is an underline when it is up to three spaces, one
+// or more = (or one or more -) and spaces or tabs, with any number of backslashes in front (the
+// ones that earlier text already had). Every such line gets one backslash; every such line that
+// starts with a backslash loses one, so the round trip is exact.
+const SETEXT_UNDERLINE_LINE = /^\\* {0,3}(?:=+|-+)[ \t]*$/;
+const SETEXT_ESCAPED_LINE = /^\\+ {0,3}(?:=+|-+)[ \t]*$/;
+
+export function protectSetextLines(text) {
+  return String(text ?? '')
+    .split('\n')
+    .map((line) => (SETEXT_UNDERLINE_LINE.test(line) ? `${String.fromCharCode(92)}${line}` : line))
+    .join('\n');
+}
+
+export function restoreSetextLines(text) {
+  return String(text ?? '')
+    .split('\n')
+    .map((line) => (SETEXT_ESCAPED_LINE.test(line) ? line.slice(1) : line))
+    .join('\n');
 }
 
 // ---------------------------------------------------------------------------------------------

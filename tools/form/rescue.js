@@ -9,11 +9,14 @@
     key = '';
   }
 
+  // The key of an earlier version (it was never published; this is tidiness) goes with the current one.
+  var names = ['', '.broken'];
+
   function discard() {
     try {
       if (key) {
-        window.localStorage.removeItem(key);
-        window.localStorage.removeItem(key + '.broken');
+        for (var index = 0; index < names.length; index += 1) window.localStorage.removeItem(key + names[index]);
+        window.localStorage.removeItem('emfc.form.v1');
       }
     } catch (error) {
       // There is no storage, so there is nothing to remove.

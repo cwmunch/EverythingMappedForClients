@@ -76,7 +76,7 @@ async function oneStep(page, next) {
   } else if (roll < 0.9) {
     page.fake.runTimers();
   } else if (roll < 0.93) {
-    page.app.exportData();
+    await page.app.exportData();
   }
 }
 

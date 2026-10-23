@@ -5,15 +5,19 @@
 // Exit codes: 0 ok, 2 wrong use or no answer at all, 3 an unreadable pack, a linked docs folder, a name or
 // size the zip cannot hold, or a zip that could not be written.
 // The files are streamed into the zip in chunks, so the memory used does not grow with the size of the pack.
+// File names are shown everywhere the way check shows them: what cannot be seen is written as <U+XXXX>.
 
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import {
+  describeAssetName,
+  entryNameProblems,
   failWith,
   hasAnyAnswer,
   isMainModule,
   loadI18n,
+  nameReasonText,
   openScriptContext,
   printProblems,
   refreshPack,
@@ -22,15 +26,15 @@ import {
   stringifyJson,
 } from './lib/index.mjs';
 import { isPackFile, localDate } from './lib/util.mjs';
-import { ZipError, checkEntries, writeZipFile } from './lib/zip.mjs';
+import { ZipError, writeZipFile } from './lib/zip.mjs';
 
 const MB = 1024 * 1024;
-const LARGE_PACK_BYTES = 50 * MB;
+// A zip above this is too large for most e-mail services.
+const LARGE_ZIP_BYTES = 50 * MB;
 // What the tools that open the zip accept (FORMAT.md section 15).
 const MAX_FILE_BYTES = 500 * MB;
 const MAX_PACK_BYTES = 500 * MB;
 const MAX_PACK_FILES = 5000;
-const MAX_RATIO = 200;
 const ZIP_CODES_WITH_TEXT = [
   'tooManyEntries',
   'tooLarge',
@@ -39,16 +43,19 @@ const ZIP_CODES_WITH_TEXT = [
   'duplicateName',
   'needsNewerNode',
   'fileChanged',
+  'unreadableFile',
 ];
 
-// A failure with a text key for the message and the exit code to end with.
+// A failure with a text key for the message and the exit code to end with. `details` are further
+// lines ({ key, params }) printed under the message.
 class Failure extends Error {
-  constructor(key, params = {}, exitCode = 2) {
+  constructor(key, params = {}, exitCode = 2, details = []) {
     super(key);
     this.name = 'Failure';
     this.key = key;
     this.params = params;
     this.exitCode = exitCode;
+    this.details = details;
   }
 }
 
@@ -66,6 +73,43 @@ function formatSize(bytes, lang = 'en') {
   if (bytes >= 1024 * 1024) return `${number.format(bytes / (1024 * 1024))} MB`;
   if (bytes >= 1024) return `${number.format(bytes / 1024)} KB`;
   return `${number.format(bytes)} B`;
+}
+
+// Text values of a message that name a file or folder, shown the one way file names are shown.
+function showParams(params) {
+  return Object.fromEntries(Object.entries(params).map(([key, value]) => [key, typeof value === 'string' ? describeAssetName(value) : value]));
+}
+
+// A name that is not valid UTF-8, written so that it can be read: valid text as it is, every other
+// byte as <0xHH>, and what cannot be seen as <U+XXXX>. (The same display as check uses.)
+function showNameBytes(bytes) {
+  const decoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
+  let shown = '';
+  let index = 0;
+  while (index < bytes.length) {
+    const lead = bytes[index];
+    let length = 0;
+    if (lead < 0x80) length = 1;
+    else if (lead >= 0xf0) length = 4;
+    else if (lead >= 0xe0) length = 3;
+    else if (lead >= 0xc0) length = 2;
+    let character = null;
+    if (length > 0 && index + length <= bytes.length) {
+      try {
+        character = decoder.decode(bytes.subarray(index, index + length));
+      } catch {
+        character = null;
+      }
+    }
+    if (character === null) {
+      shown += `<0x${lead.toString(16).toUpperCase().padStart(2, '0')}>`;
+      index += 1;
+    } else {
+      shown += character;
+      index += length;
+    }
+  }
+  return describeAssetName(shown);
 }
 
 // The zip goes to an existing folder that is not inside docs/. Real paths are compared,
@@ -100,8 +144,10 @@ function assertRealFolders(root, schema) {
 // Included: the files of the section 3 layout (the six answer files, the open-questions file, the
 // assets table, the manifest, the state) and the plain files below docs/assets/. Everything else
 // under docs/ (files that isPackFile refuses, such as dotfiles and *.tmp files, then docs/06-decisions.md,
-// other files and links) is skipped
-// and named in `skipped`. A link or special file in the included part stops the packing.
+// other files and links) is skipped and named in `skipped`. A link or special file in the included part
+// stops the packing. Folders are read as bytes: a name that is not valid UTF-8 cannot go into the zip,
+// so one inside docs/assets/ is listed in `unnameable` (as it is shown, not entered), and one anywhere
+// else is skipped.
 function planPack(root, schema) {
   const generated = schema.generatedFiles;
   const layout = new Set([
@@ -112,17 +158,24 @@ function planPack(root, schema) {
     generated.state,
   ]);
   const assetsPrefix = `${generated.assetsDir}/`;
+  const inAssets = (relative) => relative === generated.assetsDir || relative.startsWith(assetsPrefix);
   const docs = path.join(root, 'docs');
 
   const included = [];
   const skipped = [];
+  const unnameable = [];
   const walk = (folder, relative) => {
-    for (const name of fs.readdirSync(folder)) {
-      const entry = `${relative}/${name}`;
-      const absolute = path.join(folder, name);
+    for (const bytes of fs.readdirSync(folder, { encoding: 'buffer' })) {
+      const text = bytes.toString('utf8');
+      const valid = Buffer.from(text, 'utf8').equals(bytes);
+      const absolute = valid ? path.join(folder, text) : Buffer.concat([Buffer.from(`${folder}${path.sep}`), bytes]);
+      const entry = `${relative}/${valid ? text : showNameBytes(bytes)}`;
       const stat = fs.lstatSync(absolute);
-      if (!isPackFile(entry)) {
-        skipped.push(stat.isDirectory() ? `${entry}/` : entry);
+      const label = stat.isDirectory() ? `${entry}/` : entry;
+      if (!isPackFile(`${relative}/${text}`)) {
+        skipped.push(label);
+      } else if (!valid) {
+        (inAssets(relative) ? unnameable : skipped).push(label);
       } else if (stat.isDirectory()) {
         walk(absolute, entry);
       } else if (!layout.has(entry) && !entry.startsWith(assetsPrefix)) {
@@ -138,7 +191,26 @@ function planPack(root, schema) {
 
   const compare = (a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b));
   included.sort((a, b) => compare(a.name, b.name));
-  return { included, skipped: skipped.sort(compare) };
+  return { included, skipped: skipped.sort(compare), unnameable: unnameable.sort(compare) };
+}
+
+// Every name the zip would refuse, all at once with the reason for each: a character or a name that
+// does not work on every system, a name that is too long, two names that are one on Windows and macOS,
+// a file that is also the name of a folder, a name that is not valid UTF-8. Nothing is written or read before this.
+function assertNamesFit(plan, i18n) {
+  const problems = [
+    ...entryNameProblems(plan.included.map((file) => file.name)),
+    ...plan.unnameable.map((name) => ({ name, code: 'notText' })),
+  ];
+  if (problems.length === 0) return;
+  const details = problems.map((problem) => ({
+    key: 'ui.pack.error.nameLine',
+    params: {
+      name: describeAssetName(problem.name),
+      reason: nameReasonText(i18n, problem.code, describeAssetName(problem.other ?? '')),
+    },
+  }));
+  throw new Failure('ui.pack.error.names', { count: problems.length }, 3, details);
 }
 
 // Refuses a pack the receiving tools would refuse, before any file is read.
@@ -155,7 +227,6 @@ function checkLimits(included, lang) {
   if (included.length > MAX_PACK_FILES) {
     throw new Failure('ui.pack.error.tooManyFiles', { count: included.length, max: MAX_PACK_FILES }, 3);
   }
-  return total;
 }
 
 // Turns a zip writer failure into a message and an exit code.
@@ -167,16 +238,6 @@ function zipFailure(error) {
     return new Failure(`ui.pack.error.zip.${error.code}`, error.params, 3);
   }
   return new Failure('ui.pack.error.writeFailed', { message: error.message }, 3);
-}
-
-// Checks every name that would go into the zip (not allowed on every system, too long, twice), before
-// anything is written or read.
-function assertNamesFit(included) {
-  try {
-    checkEntries(included.map((file) => ({ name: file.name })));
-  } catch (error) {
-    throw zipFailure(error);
-  }
 }
 
 async function writePackZip(zipPath, included, today) {
@@ -217,7 +278,7 @@ async function run(argv, io, session) {
   const { t } = i18n;
   const json = values.json === true;
   // File names and paths come from the pack and the person's disk, so nothing is printed raw.
-  // (The JSON output is not affected: JSON escapes control characters itself.)
+  // (The JSON output is not affected: stringifyJson escapes control characters itself.)
   const say = (text) => {
     if (!json) io.stdout.write(`${sanitizeForTerminal(text)}\n`);
   };
@@ -229,10 +290,10 @@ async function run(argv, io, session) {
   checkOutputFolder(outDir, root);
   // Names and sizes only, before anything is read or written: refreshing the manifest below reads every asset to hash it.
   const firstPlan = planPack(root, schema);
-  assertNamesFit(firstPlan.included);
+  assertNamesFit(firstPlan, i18n);
   checkLimits(firstPlan.included, language);
 
-  say(t('ui.pack.checking', { root }));
+  say(t('ui.pack.checking', { root: describeAssetName(root) }));
   // The generated files stay in the language of the pack, whatever language the messages here use.
   const { report } = refreshPack(root, { schema, schemaDir: context.schemaDir, language, now, today });
   say(t('ui.pack.counts', report.completeness.counts));
@@ -243,17 +304,18 @@ async function run(argv, io, session) {
   );
   say(t('ui.pack.refreshed'));
 
-  const { included, skipped } = planPack(root, schema);
-  assertNamesFit(included);
-  const totalBytes = checkLimits(included, language);
+  const plan = planPack(root, schema);
+  assertNamesFit(plan, i18n);
+  checkLimits(plan.included, language);
+  const { included, skipped } = plan;
   const warn = (text) => (json ? io.stderr : io.stdout).write(`${sanitizeForTerminal(text)}\n`);
-  for (const entry of skipped) warn(t('ui.pack.skipped', { path: entry }));
-  if (totalBytes > LARGE_PACK_BYTES) warn(t('ui.pack.warn.large', { size: formatSize(totalBytes, language) }));
+  for (const entry of skipped) warn(t('ui.pack.skipped', { path: describeAssetName(entry) }));
 
   const zipPath = path.join(outDir, `intake-pack-${today}.zip`);
   const written = await writePackZip(zipPath, included, today);
   const hash = hashFile(zipPath);
-  if (written.uncompressed > MAX_RATIO * written.bytes) warn(t('ui.pack.warn.ratio'));
+  // The size that counts is the zip, not the files before they were zipped.
+  if (written.bytes > LARGE_ZIP_BYTES) warn(t('ui.pack.warn.large', { size: formatSize(written.bytes, language) }));
 
   if (json) {
     const result = { zip: zipPath, sha256: hash, bytes: written.bytes, entries: written.entries };
@@ -264,11 +326,11 @@ async function run(argv, io, session) {
   say('');
   say(t('ui.pack.created', { file: path.basename(zipPath), count: written.entries, size: formatSize(written.bytes, language) }));
   say(t('ui.pack.files.title'));
-  for (const file of included) say(`  ${file.name}`);
+  for (const file of included) say(`  ${describeAssetName(file.name)}`);
   say('');
   say(t('ui.pack.send.title'));
   say(t('ui.pack.send.file'));
-  say(zipPath);
+  say(describeAssetName(zipPath));
   say(t('ui.pack.send.only'));
   say(t('ui.pack.send.sha', { hash }));
   say(t('ui.pack.send.shaHint'));
@@ -283,7 +345,8 @@ export async function main(argv, io = defaultIo()) {
   } catch (error) {
     const i18n = session.i18n ?? loadI18n(resolveLanguage({ env: io.env ?? process.env }), io.schemaDir);
     if (error instanceof Failure) {
-      printProblems(io.stderr, i18n, [{ key: error.key, params: error.params }]);
+      const lines = [{ key: error.key, params: showParams(error.params) }, ...error.details];
+      printProblems(io.stderr, i18n, lines);
       return error.exitCode;
     }
     return failWith(error, io, i18n);

@@ -94,7 +94,7 @@ test('ui-check follows the writing rules: no em dash, no exclamation mark, no em
 });
 
 // The text keys the code asks for must exist, and the keys of ui-check must all be in use.
-const OWN_PREFIXES = ['ui.check.', 'ui.next.', 'ui.answer.', 'ui.assets.', 'ui.openq.'];
+const OWN_PREFIXES = ['ui.check.', 'ui.next.', 'ui.answer.', 'ui.assets.', 'ui.openq.', 'ui.nameReason.'];
 
 function sourceFiles() {
   const names = [

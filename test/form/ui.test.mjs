@@ -4,17 +4,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { localDate } from '../../skill/everything-mapped/scripts/lib/util.mjs';
-import {
-  FakeDocument,
-  byTag,
-  createBrokenStorage,
-  createFakeWindow,
-  createMemoryStorage,
-  fakeFile,
-  findAll,
-  readableStrings,
-  textOf,
-} from './fake-dom.mjs';
+import { byTag, createBrokenStorage, createFakeWindow, createMemoryStorage, FakeDocument, fakeFile, findAll, readableStrings, same, textOf } from './fake-dom.mjs';
 import { LOGO_SVG, blobBytes, loadBrowserScript, plain, schema, textOfEntry, unzipPack } from './helpers.mjs';
 
 const { emfc, data } = loadBrowserScript();
@@ -396,14 +386,14 @@ test('lists: rows are added and removed, Enter moves on or adds a row, empty row
   const add = buttonByText(metrics.root, text('en', 'ui.form.list.add'));
   add.click();
   assert.equal(rows().length, 2);
-  assert.equal(page.app.doc.activeElement, rows()[1].children[0], 'the new row has focus');
+  same(page.app.doc.activeElement, rows()[1].children[0], 'the new row has focus');
   typeInto(rows()[1].children[0], 'Sales online');
   const enter = rows()[1].children[0].fire('keydown', { key: 'Enter' });
   assert.equal(enter.defaultPrevented, true);
   assert.equal(rows().length, 3, 'Enter in the last row adds a row');
   const move = rows()[0].children[0].fire('keydown', { key: 'Enter' });
   assert.equal(move.defaultPrevented, true);
-  assert.equal(page.app.doc.activeElement, rows()[1].children[0], 'Enter in another row moves to the next');
+  same(page.app.doc.activeElement, rows()[1].children[0], 'Enter in another row moves to the next');
   flush(page);
   assert.deepEqual(plain(page.app.state.answers['A.metrics'].items.map((item) => item.text)), ['Leads per month', 'Sales online']);
   assert.equal(page.app.analysis.entries['A.metrics'].body, '- Leads per month\n- Sales online');
@@ -497,7 +487,7 @@ test('moving between modules: the navigation, the buttons and the focus', () => 
   assert.deepEqual(shown(), ['C']);
   assert.equal(page.app.navItems.get('C').button.getAttribute('aria-current'), 'step');
   assert.equal(page.app.navItems.get('A').button.hasAttribute('aria-current'), false);
-  assert.equal(page.app.doc.activeElement, page.app.sections.get('C').heading, 'the module heading gets focus');
+  same(page.app.doc.activeElement, page.app.sections.get('C').heading, 'the module heading gets focus');
   assert.equal(page.app.state.currentModule, 'C');
   const section = page.app.sections.get('C').section;
   buttonByText(section, text('en', 'ui.form.nav.next')).click();
@@ -519,12 +509,12 @@ test('the open must-answer questions are listed, and a click goes to the questio
   page.app.navItems.get('D').button.click();
   links[0].click();
   assert.equal(page.app.state.currentModule, 'A');
-  assert.equal(page.app.doc.activeElement, part(page, 'A.business').focus());
+  same(page.app.doc.activeElement, part(page, 'A.business').focus());
   const target = byTag(page.app.refs.panel.list, 'button').find((button) => button.textContent === text('da', 'q.I.domain.label'));
   pick(part(page, 'I.domain').toggle);
   target.click();
   assert.equal(page.app.state.currentModule, 'I');
-  assert.equal(page.app.doc.activeElement, part(page, 'I.domain').toggle, 'a deferred question focuses its toggle');
+  same(page.app.doc.activeElement, part(page, 'I.domain').toggle, 'a deferred question focuses its toggle');
 });
 
 test('the review step lists what is open, deferred and worth checking', () => {
@@ -595,7 +585,7 @@ test('form data can be saved to a file and carried to another page', async () =>
   logoInput.files = [fakeFile('logo.svg', LOGO_SVG)];
   logoInput.fire('change');
   await until(() => source.app.state.assets.length === 1, 'the file');
-  source.app.exportData();
+  await source.app.exportData();
   assert.equal(source.doc.downloads[0].name, `everything-mapped-form-${localDate(new Date())}.json`);
   const blob = source.fake.blobs.get(source.doc.downloads[0].href);
   assert.equal(blob.type, 'application/json');
@@ -764,7 +754,7 @@ test('switching language rebuilds the texts, keeps the answers and the place, an
   assert.equal(page.doc.documentElement.lang, 'en');
   assert.equal(page.doc.title, text('en', 'ui.form.title'));
   assert.equal(page.app.refs.langButtons.en.getAttribute('aria-pressed'), 'true');
-  assert.equal(page.doc.activeElement, page.app.refs.langButtons.en);
+  same(page.doc.activeElement, page.app.refs.langButtons.en);
   assert.equal(page.app.state.currentModule, 'C');
   assert.equal(page.app.sections.get('C').section.hidden, false);
   assert.equal(part(page, 'A.budget').focus().value, '10');

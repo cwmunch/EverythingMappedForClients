@@ -5,7 +5,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { applyAnswers } from '../../skill/everything-mapped/scripts/lib/index.mjs';
 import { main as packMain } from '../../skill/everything-mapped/scripts/pack.mjs';
-import { makeTempDir, runCli, snapshot, tryLinkFolder, trySymlink, writeFile } from './helpers.mjs';
+import { makeTempDir, runCli, snapshot, tryLinkFolder, trySymlink, writeFile, writeFilled } from './helpers.mjs';
 import { unzip } from './unzip.mjs';
 
 const sha256 = (buffer) => crypto.createHash('sha256').update(buffer).digest('hex');
@@ -273,7 +273,7 @@ test('unknown options, a missing value and extra words are usage errors with exi
 
 test('a large pack prints a warning, in JSON mode on stderr', async (t) => {
   const { root, out } = makePack(t);
-  fs.writeFileSync(path.join(root, 'docs', 'assets', 'big.bin'), Buffer.alloc(51 * 1024 * 1024));
+  writeFilled(path.join(root, 'docs', 'assets', 'big.bin'), 51, 'random'); // does not shrink: the zip is as large as the file
 
   const human = await runPack(['--root', root, '--out', out]);
   assert.equal(human.code, 0, human.stderr);
@@ -423,12 +423,33 @@ test('a pack with more than 5000 files is refused', async (t) => {
   assert.deepEqual(fs.readdirSync(out), []);
 });
 
-test('files that shrink by more than 200 to 1 give a warning, because the receiving tools may refuse them', async (t) => {
+test('the size warning is about the zip, not about the files before they are zipped', async (t) => {
   const { root, out } = makePack(t);
-  fs.writeFileSync(path.join(root, 'docs', 'assets', 'zeros.bin'), Buffer.alloc(2 * MB));
+  writeFilled(path.join(root, 'docs', 'assets', 'text.txt'), 52, 'text'); // 52 MB of text, a few MB as a zip
+
+  const human = await runPack(['--root', root, '--out', out]);
+  assert.equal(human.code, 0, human.stderr);
+  assert.doesNotMatch(human.stdout, /Many e-mail services refuse/, 'the zip is small, so there is no warning');
+  const sizeOfZip = fs.statSync(path.join(out, ZIP_NAME)).size;
+  assert.ok(sizeOfZip < 20 * MB, `the zip is ${sizeOfZip} bytes`);
+
+  const json = await runPack(['--root', root, '--out', out, '--json']);
+  assert.doesNotMatch(json.stderr, /Many e-mail services refuse/);
+});
+
+test('a file that would shrink by more than 200 to 1 is stored, so the zip never holds an entry the receiving tools refuse', async (t) => {
+  const { root, out } = makePack(t);
+  writeFilled(path.join(root, 'docs', 'assets', 'zeros.bin'), 2, 'zeros');
   const result = await runPack(['--root', root, '--out', out]);
   assert.equal(result.code, 0, result.stderr);
-  assert.match(result.stdout, /shrink by more than 200 to 1/);
+  assert.doesNotMatch(result.stdout + result.stderr, /200 to 1/, 'there is no ratio warning any more');
+
+  const entries = unzip(fs.readFileSync(path.join(out, ZIP_NAME)));
+  assert.equal(entries.get('docs/assets/zeros.bin').method, 0);
+  assert.equal(entries.get('docs/assets/zeros.bin').data.length, 2 * MB);
+  for (const [name, entry] of entries) {
+    if (entry.method === 8) assert.ok(entry.data.length <= entry.compressedSize * 200, `${name} is over the ratio limit`);
+  }
 });
 
 test('a zip that cannot be written exits 3', { skip: !onPosix || process.getuid?.() === 0 }, async (t) => {
@@ -480,7 +501,7 @@ test('a pack where every question is still missing is refused, whatever the dept
 // Terminal safety: nothing from the pack is printed raw
 
 const ESC = String.fromCharCode(27);
-const ESC_PICTURE = String.fromCodePoint(0x241b); // the visible stand-in for ESC
+const ESC_MARKER = '<U+001B>'; // how a file name shows the ESC character, here and in check
 
 // Writes a file whose name holds an escape sequence; false where the file system does not allow that name.
 function writeHostile(filePath) {
@@ -499,11 +520,11 @@ test('a skipped file name with an escape sequence is shown safely, in both outpu
   const human = await runPack(['--root', root, '--out', out]);
   assert.equal(human.code, 0, human.stderr);
   assert.ok(!human.stdout.includes(ESC) && !human.stderr.includes(ESC), 'no raw ESC may reach the terminal');
-  assert.ok(human.stdout.includes(`Not put in the zip file: docs/other${ESC_PICTURE}[2Jname.txt`));
+  assert.ok(human.stdout.includes(`Not put in the zip file: docs/other${ESC_MARKER}[2Jname.txt`));
 
   const json = await runPack(['--root', root, '--out', out, '--json']);
   assert.ok(!json.stdout.includes(ESC) && !json.stderr.includes(ESC));
-  assert.ok(json.stderr.includes(ESC_PICTURE));
+  assert.ok(json.stderr.includes(ESC_MARKER));
   assert.doesNotThrow(() => JSON.parse(json.stdout));
 });
 
@@ -514,7 +535,7 @@ test('an error that names a file with an escape sequence is shown safely', async
   const result = await runPack(['--root', root, '--out', out]);
   assert.equal(result.code, 3);
   assert.ok(!result.stdout.includes(ESC) && !result.stderr.includes(ESC), 'no raw ESC may reach the terminal');
-  assert.ok(result.stderr.includes(ESC_PICTURE));
+  assert.ok(result.stderr.includes(ESC_MARKER));
   assert.deepEqual(fs.readdirSync(out), []);
 });
 
@@ -534,7 +555,7 @@ test('a link in the pack with an escape sequence in its name is shown safely (ex
   const result = await runPack(['--root', root, '--out', out]);
   assert.equal(result.code, 3);
   assert.ok(!result.stdout.includes(ESC) && !result.stderr.includes(ESC));
-  assert.ok(result.stderr.includes(ESC_PICTURE));
+  assert.ok(result.stderr.includes(ESC_MARKER));
 });
 
 // ---------------------------------------------------------------------------------------------
@@ -575,9 +596,8 @@ test('a path part over 255 bytes or a path over 240 characters is refused before
 
   const result = await runPack(['--root', root, '--out', out]);
   assert.equal(result.code, 3);
-  assert.ok(result.stderr.includes(`docs/assets/${longName}`), 'the file is named');
-  assert.match(result.stderr, /too long for the pack/);
-  assert.match(result.stderr, /Shorten or rename the file/);
+  assert.match(result.stderr, /Some files cannot be put in the zip file\. Rename or remove them/);
+  assert.ok(result.stderr.includes(`- docs/assets/${longName}: the path is longer than 240 characters`), 'the file is named with the reason');
   assert.deepEqual(fs.readdirSync(out), []);
   assert.deepEqual(snapshot(root), before, 'nothing in the pack is rewritten either');
 });
@@ -606,4 +626,86 @@ test('the zip is written under a temporary name and only the finished file is le
   assert.equal(result.code, 0, result.stderr);
   assert.deepEqual(fs.readdirSync(out).sort(), ['.intake-pack-2026-10-23.zip.keep.tmp', ZIP_NAME].sort());
   assert.equal(fs.readFileSync(path.join(out, '.intake-pack-2026-10-23.zip.keep.tmp'), 'utf8'), 'not ours');
+});
+
+// ---------------------------------------------------------------------------------------------
+// Every name the zip would refuse is listed at once
+
+test('all offending names are listed in one run, each with its reason, before anything is written (exit 3)', async (t) => {
+  const { root, out } = makePack(t);
+  const assets = path.join(root, 'docs', 'assets');
+  const esc = String.fromCharCode(27);
+  const longName = `${'y'.repeat(236)}.txt`;
+  const hostile = ['a<b.png', '>lead.png', `esc${esc}[31m.png`, 'CON.txt', 'trailing.', 'Dup.txt', 'dup.txt', 'Logo', 'logo/x.png', longName];
+  for (const name of hostile) writeFile(path.join(assets, ...name.split('/')), 'x');
+  let invalidCreated = true;
+  try {
+    fs.writeFileSync(Buffer.concat([Buffer.from(`${assets}${path.sep}lat`), Buffer.from([0xe9]), Buffer.from('.png')]), 'x');
+  } catch {
+    invalidCreated = false; // this file system does not allow names that are not valid UTF-8
+  }
+  const generated = ['intake-manifest.json', '07-risks-and-open-questions.md'].map((name) => path.join(root, 'docs', name));
+  const before = generated.map((file) => fs.readFileSync(file, 'utf8'));
+
+  const result = await runPack(['--root', root, '--out', out]);
+  assert.equal(result.code, 3, result.stderr);
+  assert.match(result.stderr, /Some files cannot be put in the zip file\. Rename or remove them and try again:/);
+  const lines = result.stderr.split('\n');
+  const expected = [
+    '- docs/assets/a<b.png: the name contains a character that is not allowed on every system',
+    '- docs/assets/>lead.png: the name contains a character that is not allowed on every system',
+    '- docs/assets/esc<U+001B>[31m.png: the name contains a character that is not allowed on every system',
+    '- docs/assets/CON.txt: the name is reserved on Windows',
+    '- docs/assets/trailing.: the name ends with a dot or a space',
+    '- docs/assets/dup.txt: the name differs from docs/assets/Dup.txt only in case or in how an accent is written',
+    '- docs/assets/Logo: the name is also the name of a folder that holds docs/assets/logo/x.png',
+    `- docs/assets/${longName}: the path is longer than 240 characters`,
+  ];
+  if (invalidCreated) expected.push('- docs/assets/lat<0xE9>.png: the name is not valid text');
+  for (const line of expected) assert.ok(lines.some((candidate) => candidate.startsWith(line)), `missing: ${line}`);
+  assert.ok(!result.stderr.includes(esc), 'no raw ESC reaches the terminal');
+
+  assert.deepEqual(fs.readdirSync(out), [], 'no zip and no temporary file');
+  assert.deepEqual(generated.map((file) => fs.readFileSync(file, 'utf8')), before, 'the pack is not rewritten either');
+});
+
+test('a name with a reason on its own is listed with that reason (exit 3), and fine names do not appear', async (t) => {
+  const { root, out } = makePack(t);
+  writeFile(path.join(root, 'docs', 'assets', 'nul.png'), 'x');
+  const result = await runPack(['--root', root, '--out', out]);
+  assert.equal(result.code, 3);
+  assert.ok(result.stderr.includes('- docs/assets/nul.png: the name is reserved on Windows'));
+  assert.ok(!result.stderr.includes('logo.svg'));
+});
+
+test('a file and a folder with the same name (ignoring case) clash even when both names are fine alone', async (t) => {
+  const { root, out } = makePack(t);
+  writeFile(path.join(root, 'docs', 'assets', 'Photos'), 'a file');
+  writeFile(path.join(root, 'docs', 'assets', 'photos', 'one.jpg'), 'x');
+  const result = await runPack(['--root', root, '--out', out]);
+  assert.equal(result.code, 3);
+  assert.ok(result.stderr.includes('- docs/assets/Photos: the name is also the name of a folder that holds docs/assets/photos/one.jpg'));
+  assert.deepEqual(fs.readdirSync(out), []);
+});
+
+test('a name that is not valid UTF-8 outside docs/assets is only skipped, and shown with markers', async (t) => {
+  const { root, out } = makePack(t);
+  try {
+    fs.writeFileSync(Buffer.concat([Buffer.from(`${path.join(root, 'docs')}${path.sep}notes-`), Buffer.from([0xe9]), Buffer.from('.txt')]), 'x');
+  } catch {
+    return t.skip('this file system does not allow names that are not valid UTF-8');
+  }
+  const result = await runPack(['--root', root, '--out', out]);
+  assert.equal(result.code, 0, result.stderr);
+  assert.ok(result.stdout.includes('Not put in the zip file: docs/notes-<0xE9>.txt'));
+});
+
+test('file names are shown with <U+XXXX> markers everywhere, the same way check shows them', async (t) => {
+  const { root, out } = makePack(t);
+  const esc = String.fromCharCode(27);
+  if (!writeHostile(path.join(root, 'docs', `other${esc}.txt`))) return t.skip('this file system does not allow control characters in names');
+  const result = await runPack(['--root', root, '--out', out]);
+  assert.equal(result.code, 0, result.stderr);
+  assert.ok(result.stdout.includes('Not put in the zip file: docs/other<U+001B>.txt'));
+  assert.ok(!/[\u2400-\u243f]/.test(result.stdout), 'no control pictures: one display only');
 });

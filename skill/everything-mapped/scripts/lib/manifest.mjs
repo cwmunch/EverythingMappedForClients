@@ -21,18 +21,66 @@ export function sha256(data) {
 }
 
 const HASH_CHUNK_BYTES = 1024 * 1024;
+const { O_RDONLY = 0, O_NOFOLLOW = 0, O_NONBLOCK = 0 } = fs.constants;
+
+// Opens a file for reading and returns the descriptor, or throws an error with a code: ELOOP when
+// the last part of the path is a link (it is not followed, so a file in a pack cannot lead
+// somewhere else), ENOTFILE when it is not a regular file (a folder, a pipe, a device), or the
+// code of the system. The file is opened without waiting, so a pipe put in place of a file cannot
+// stop the program. With followLinks a link is followed, for a file a person names on the command
+// line.
+export function openRegularFile(absolute, { followLinks = false } = {}) {
+  if (!followLinks && O_NOFOLLOW === 0) {
+    const stat = fs.lstatSync(absolute, { throwIfNoEntry: false });
+    if (stat && stat.isSymbolicLink()) throw Object.assign(new Error('ELOOP: the file is a link'), { code: 'ELOOP' });
+  }
+  const descriptor = fs.openSync(absolute, O_RDONLY | O_NONBLOCK | (followLinks ? 0 : O_NOFOLLOW));
+  try {
+    if (!fs.fstatSync(descriptor).isFile()) throw Object.assign(new Error('ENOTFILE: not a regular file'), { code: 'ENOTFILE' });
+  } catch (error) {
+    fs.closeSync(descriptor);
+    throw error;
+  }
+  return descriptor;
+}
+
+// All the bytes of an open file, or null when there are more than `limit`. At most limit + 1 bytes
+// are read. `sizeHint` (the size the file had) only sets the size of the first read.
+export function readBoundedBytes(descriptor, limit, sizeHint = 0) {
+  const chunks = [];
+  let total = 0;
+  const first = Math.min(Math.max(sizeHint, 0) + 1, HASH_CHUNK_BYTES);
+  for (;;) {
+    const buffer = Buffer.allocUnsafe(Math.min(Math.max(first, 4096), limit + 1 - total));
+    const read = fs.readSync(descriptor, buffer, 0, buffer.length, null);
+    if (read === 0) break;
+    chunks.push(buffer.subarray(0, read));
+    total += read;
+    if (total > limit) return null;
+  }
+  return Buffer.concat(chunks, total);
+}
 
 // The SHA-256 of a file, read in chunks so that a large file never sits in memory as a whole.
+// A file that is a link, is not a regular file or cannot be read is a PackError that names it.
 export function sha256File(absolute) {
+  const unreadable = () => new PackError('ui.check.err.assetUnreadable', { path: absolute });
   const hash = createHash('sha256');
   const chunk = Buffer.alloc(HASH_CHUNK_BYTES);
-  const descriptor = fs.openSync(absolute, 'r');
+  let descriptor;
+  try {
+    descriptor = openRegularFile(absolute);
+  } catch {
+    throw unreadable();
+  }
   try {
     let read = fs.readSync(descriptor, chunk, 0, chunk.length, null);
     while (read > 0) {
       hash.update(chunk.subarray(0, read));
       read = fs.readSync(descriptor, chunk, 0, chunk.length, null);
     }
+  } catch {
+    throw unreadable();
   } finally {
     fs.closeSync(descriptor);
   }
@@ -101,7 +149,12 @@ function hashFiles(root, relativePaths, contents) {
       continue;
     }
     const absolute = path.join(root, ...relative.split('/'));
-    const stat = fs.statSync(absolute, { throwIfNoEntry: false });
+    let stat;
+    try {
+      stat = fs.statSync(absolute, { throwIfNoEntry: false });
+    } catch {
+      throw new PackError('ui.check.err.assetUnreadable', { path: relative });
+    }
     if (!stat || !stat.isFile()) continue;
     if (stat.size > MAX_ASSET_BYTES) {
       throw new PackError('ui.check.err.assetTooLarge', { path: relative, limit: `${MAX_ASSET_BYTES / (1024 * 1024)} MB` });

@@ -1,7 +1,7 @@
 // Schema rules and the one place that converts between structured input and markdown bodies
 // (FORMAT.md sections 4.4 and 9). This file must stay pure: no node: imports, no process, no Buffer.
 
-import { MAX_BODY_CHARS, MAX_LINE_CHARS, decodeMarkup, encodeMarkup, escapePipes, hasHiddenCharacters, isPlainObject, isValidDate, joinLines, normalizeText, splitLines, splitPipes, toToken, uniq } from './util.mjs';
+import { MAX_BODY_CHARS, MAX_FIELD_CHARS, MAX_LINE_CHARS, decodeMarkup, encodeMarkup, escapePipes, hasHiddenCharacters, isPlainObject, isValidDate, joinLines, normalizeText, protectSetextLines, restoreSetextLines, splitLines, splitPipes, toToken, uniq } from './util.mjs';
 
 export const ANSWER_STATUSES = ['complete', 'partial', 'tbd', 'missing'];
 
@@ -105,6 +105,23 @@ export function effectiveLevel(question, answersById, schema) {
   return question.level;
 }
 
+// The questions that the answers in `after` switch off (showIf) although they were shown with
+// `before` and hold an answer (also a deferred one): [{ id, controller, value }], where controller
+// is the question whose answer switches it off and value is what it is set to. `ignore` is a Set
+// of ids that are not reported, such as the questions that the same input clears.
+export function switchedOffQuestions(schema, before, after, ignore = new Set()) {
+  const found = [];
+  for (const question of questionsInOrder(schema)) {
+    if (!question.showIf || ignore.has(question.id)) continue;
+    const entry = after[question.id];
+    if (!entry || entry.status === 'missing') continue;
+    if (effectiveLevel(question, before, schema) === 'skipped') continue;
+    if (effectiveLevel(question, after, schema) !== 'skipped') continue;
+    found.push({ id: question.id, controller: question.showIf.id, value: selectedChoices(schema, after, question.showIf.id).join(', ') });
+  }
+  return found;
+}
+
 // ---------------------------------------------------------------------------------------------
 // Body text -> structured value
 
@@ -159,7 +176,7 @@ export function parseBody(question, body) {
     const { tagged, note } = parseTaggedBody(text, DATE_LINE);
     return { date: tagged ?? '', note };
   }
-  return { text };
+  return { text: restoreSetextLines(text) };
 }
 
 export function emptyValue(question) {
@@ -218,7 +235,7 @@ export function bodyFromInput(question, input) {
     const date = String(input.date ?? '').trim();
     return [...(date ? [`Date: ${date}`] : []), ...noteLines(input.note)].join('\n');
   }
-  return encodeMarkup(normalizeText(input.text));
+  return encodeMarkup(protectSetextLines(normalizeText(input.text)));
 }
 
 // The body as the renderer writes it: canonical bullets, Choice and Note lines.
@@ -228,7 +245,7 @@ export function canonicalBody(question, entry) {
   if (entry.status === 'complete' || entry.status === 'partial') {
     return bodyFromInput(question, parseBody(question, body));
   }
-  return encodeMarkup(decodeMarkup(body));
+  return encodeMarkup(protectSetextLines(restoreSetextLines(decodeMarkup(body))));
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -334,6 +351,9 @@ export function checkAnswerInput(question, input) {
     return problems;
   }
   if (input.owner !== undefined && typeof input.owner !== 'string') add('ui.answer.err.badOwner');
+  else if (typeof input.owner === 'string' && input.owner.length > MAX_FIELD_CHARS) {
+    add('ui.answer.err.fieldTooLong', { field: `owner (${question.id})`, limit: MAX_FIELD_CHARS });
+  }
   if (input.due !== undefined && input.due !== '' && !isValidDate(input.due)) {
     add('ui.answer.err.badDue', { value: String(input.due) });
   }
@@ -369,7 +389,7 @@ export function entryFromInput(question, input) {
   }
   if (input.status === 'tbd') {
     const parts = [input.note, input.text].filter((part) => typeof part === 'string' && part.trim() !== '');
-    return { status: 'tbd', owner, due, body: encodeMarkup(normalizeText(parts.join('\n'))), value: emptyValue(question) };
+    return { status: 'tbd', owner, due, body: encodeMarkup(protectSetextLines(normalizeText(parts.join('\n')))), value: emptyValue(question) };
   }
   return { status: 'missing', owner, due, body: '', value: emptyValue(question) };
 }

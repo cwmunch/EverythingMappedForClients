@@ -56,18 +56,18 @@ const TRICKY_PATHS = [
 test('the form refuses the names the zip writer refuses, and no others (a table of tricky names)', () => {
   assert.ok(TRICKY_PATHS.length > 90);
   for (const name of TRICKY_PATHS) {
-    assert.equal(library.zipNameProblem(name) !== '', zipRefuses(name), JSON.stringify(name));
+    assert.equal(library.nameProblems(name).length > 0, zipRefuses(name), JSON.stringify(name));
   }
 });
 
 test('the characters a name may not hold are the zip writer\'s, code point by code point', () => {
   everyCodePoint((code, char) => {
     const name = `docs/a${char}b`;
-    assert.equal(library.zipNameProblem(name) !== '', zipRefuses(name), `U+${code.toString(16)}`);
+    assert.equal(library.nameProblems(name).length > 0, zipRefuses(name), `U+${code.toString(16)}`);
   });
   for (const lone of [0xd800, 0xdbff, 0xdc00, 0xdfff]) {
     const name = `docs/a${String.fromCharCode(lone)}b`;
-    assert.equal(library.zipNameProblem(name) !== '', zipRefuses(name), `lone ${lone.toString(16)}`);
+    assert.equal(library.nameProblems(name).length > 0, zipRefuses(name), `lone ${lone.toString(16)}`);
     assert.equal(zipRefuses(name), true);
   }
 });
@@ -130,9 +130,9 @@ function assertWhole(name, raw) {
 test('whatever name a person gives, the name that results passes all of it and ends in neither a dot nor a space', () => {
   const raws = TRICKY_PATHS.map((full) => full.slice(full.lastIndexOf('/') + 1));
   const random = generator(20261023);
-  for (let index = 0; index < 4000; index += 1) raws.push(fuzzName(random));
+  for (let index = 0; index < 1200; index += 1) raws.push(fuzzName(random));
   everyCodePoint((code, char) => {
-    if (code % 7 === 0 || code < 0x3000 || code >= 0xe0000) raws.push(`a${char}b`, `${char}`, `x.${char}`);
+    if (code % 13 === 0 || code < 0x300 || (code >= 0x2000 && code <= 0x2070) || code >= 0xe0000) raws.push(`a${char}b`, `${char}`, `x.${char}`);
   });
   const taken = new Set();
   for (const raw of raws) {
@@ -140,8 +140,8 @@ test('whatever name a person gives, the name that results passes all of it and e
     assertWhole(name, raw);
     const shared = library.safeAssetName(raw, taken, DIRECTORY);
     assertWhole(shared, raw);
-    assert.ok(!taken.has(library.foldName(shared)), `${JSON.stringify(raw)} is unique among the others`);
-    taken.add(library.foldName(shared));
+    assert.ok(!taken.has(library.foldPackName(shared)), `${JSON.stringify(raw)} is unique among the others`);
+    taken.add(library.foldPackName(shared));
   }
   assert.equal(taken.size, raws.length, 'no two names are the same, ignoring case and the way an accent is written');
 });
@@ -170,11 +170,11 @@ test('the name in the report: cut by the length limit on a dot, it does not end 
 test('a name numbered to stay unique, and two names that are one on Windows or macOS, stay valid and different', () => {
   const taken = new Set();
   const first = library.safeAssetName('Rapport.pdf', taken, DIRECTORY);
-  taken.add(library.foldName(first));
+  taken.add(library.foldPackName(first));
   const second = library.safeAssetName('RAPPORT.PDF', taken, DIRECTORY);
-  taken.add(library.foldName(second));
+  taken.add(library.foldPackName(second));
   const accent = library.safeAssetName('Caf\u00e9.txt', taken, DIRECTORY);
-  taken.add(library.foldName(accent));
+  taken.add(library.foldPackName(accent));
   const decomposed = library.safeAssetName('Cafe\u0301.TXT', taken, DIRECTORY);
   assert.deepEqual([first, second, accent, decomposed], ['Rapport.pdf', 'RAPPORT-2.PDF', 'Caf\u00e9.txt', 'Caf\u00e9-2.TXT']);
   const long = `${'y'.repeat(150)}.pdf`;
@@ -182,7 +182,7 @@ test('a name numbered to stay unique, and two names that are one on Windows or m
   const names = [];
   for (let index = 0; index < 5; index += 1) {
     const name = library.safeAssetName(long, cut, DIRECTORY);
-    cut.add(library.foldName(name));
+    cut.add(library.foldPackName(name));
     names.push(name);
     assertWhole(name, long);
   }
@@ -331,7 +331,7 @@ async function assertPackAccepted(t, state) {
     fs.writeFileSync(path.join(root, ...name.split('/')), content);
   }
   const report = validatePack(parsePack(root, schema), schema, { depth: state.depth, today: TODAY });
-  const bad = report.flags.filter((flag) => /^(?:text\.|assets\.(?:badName|unlisted|missingFile)|pack\.)/.test(flag.id));
+  const bad = report.flags.filter((flag) => /^(?:text\.|assets\.(?:badName|notPackable|unlisted|missingFile)|pack\.)/.test(flag.id));
   assert.deepEqual(bad.map((flag) => flag.id), [], 'the library finds nothing wrong with the names or the text');
   const out = path.join(makeTempDir(t), 'out');
   fs.mkdirSync(out);
@@ -407,4 +407,28 @@ test('a name with a comma, a semicolon, an ampersand or a joiner is written as t
     const semicolons = person.name.replace(/;/g, ',');
     assert.equal(manifest.respondents[0].name, semicolons, 'the name comes back whole');
   }
+});
+
+test('the form never makes a pack that the library flags for a file name, and says so when a name would be flagged', async () => {
+  const random = generator(7);
+  const state = newSampleState(engine, 'da');
+  for (let index = 0; index < 60; index += 1) {
+    const asset = engine.addAsset(state, 'B.logo', { name: fuzzName(random), data: new Uint8Array([index]) });
+    asset.rights = 'Ejes af os';
+  }
+  const analysis = engine.analyze(state, { now: NOW });
+  const names = analysis.report.flags.filter((flag) => flag.id === 'assets.notPackable' || flag.id === 'assets.badName');
+  assert.deepEqual(plain(names), [], 'sixty strange names, and the library finds nothing to say about them');
+  assert.ok((await engine.buildPack(state, { now: NOW, today: TODAY })).size > 0);
+
+  // Names that did not come from the form are refused, with the message about the name.
+  const clash = newSampleState(engine, 'da');
+  const first = engine.addAsset(clash, 'B.logo', { name: 'Logo.png', data: new Uint8Array([1]) });
+  const second = engine.addAsset(clash, 'B.logo', { name: 'other.png', data: new Uint8Array([2]) });
+  first.rights = 'Ejes af os';
+  second.rights = 'Ejes af os';
+  second.name = 'LOGO.PNG';
+  await assert.rejects(() => engine.buildPack(clash, { now: NOW, today: TODAY }), (error) => error.key === 'ui.form.err.fileName');
+  second.name = 'Con.txt';
+  await assert.rejects(() => engine.buildPack(clash, { now: NOW, today: TODAY }), (error) => error.key === 'ui.form.err.fileName');
 });

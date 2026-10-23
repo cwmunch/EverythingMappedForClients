@@ -2,7 +2,7 @@
 // Works on plain data, so the static form can use it too. This file must stay pure.
 
 import { effectiveLevel, findQuestion, inDepth, parseBody, questionsInOrder, selectedChoices, textLength } from './rules.mjs';
-import { MAX_FLAGS_PER_KIND, describeAssetName, hasHiddenCharacters, isStorableAssetName, isValidDate, joinLines, localDate, uniq } from './util.mjs';
+import { MAX_FLAGS_PER_KIND, describeAssetName, entryNameProblems, hasHiddenCharacters, isPlainObject, isStorableAssetName, isValidDate, joinLines, localDate, restoreSetextLines, uniq } from './util.mjs';
 
 // The design inputs that must be answered before the design inputs count as sufficient.
 export const DESIGN_INPUT_IDS = ['E.like', 'E.dislike', 'E.feel'];
@@ -149,7 +149,7 @@ function judgeAnswer(question, entry, level, today) {
   const result = { status: declared, declared, owner: entry ? entry.owner : '', due: entry ? entry.due : '', note: '', problems: [] };
   if (declared === 'missing') return result;
   if (declared === 'tbd') {
-    result.note = joinLines(entry.body);
+    result.note = joinLines(restoreSetextLines(entry.body));
     result.problems = tbdProblems(entry);
     return result;
   }
@@ -210,32 +210,92 @@ function addRowFlags(flags, rows, id, test, paramsOf = (row) => ({ file: row.fil
   }
 }
 
+// The key that two spellings of one file name share: the table may be written with composed
+// accents (NFC) while the disk holds decomposed ones (NFD), as macOS does.
+export function assetKey(file) {
+  return assetName(file).normalize('NFC');
+}
+
 function hasHiddenText(row) {
   return [row.what, row.owner, row.rights, row.restrictions].some(hasHiddenCharacters);
 }
 
-function assetProblems(assets) {
+// Files that the zip would refuse, each once: [{ name, code, other? }] with names relative to the
+// assets folder. Names that cannot be listed are left out; they have their own flag.
+export function notPackableAssets(present, assetsDir = 'docs/assets') {
+  return notPackableAmong(present.filter(isStorableAssetName), assetsDir);
+}
+
+function notPackableAmong(storable, assetsDir) {
+  const prefix = `${assetsDir}/`;
+  const seen = new Set();
+  const result = [];
+  for (const problem of entryNameProblems(storable.map((name) => prefix + name))) {
+    const name = problem.name.slice(prefix.length);
+    if (seen.has(name)) continue;
+    seen.add(name);
+    const entry = { name, code: problem.code };
+    if (problem.other !== undefined) entry.other = problem.other.slice(prefix.length);
+    result.push(entry);
+  }
+  return result;
+}
+
+function assetProblems(assets, assetsDir) {
   const rows = (assets && assets.rows) ?? [];
-  const present = new Set((assets && assets.present) ?? []);
-  const listed = new Set(rows.map((row) => assetName(row.file)));
+  const present = (assets && assets.present) ?? [];
+  const presentKeys = new Set(present.map((name) => name.normalize('NFC')));
+  const listedKeys = new Set(rows.map((row) => assetKey(row.file)));
   const flags = [];
+  const storable = [];
   let unlisted = 0;
   let badNames = 0;
+  const addBadName = (shown) => {
+    if (badNames < MAX_FLAGS_PER_KIND) flags.push(newFlag('assets.badName', 'warn', { file: shown }));
+    badNames += 1;
+  };
+  for (const shown of (assets && assets.invalid) ?? []) addBadName(shown);
   for (const name of present) {
     if (!isStorableAssetName(name)) {
-      if (badNames < MAX_FLAGS_PER_KIND) flags.push(newFlag('assets.badName', 'warn', { file: describeAssetName(name) }));
-      badNames += 1;
-    } else if (!listed.has(name) && unlisted < MAX_FLAGS_PER_KIND) {
-      flags.push(newFlag('assets.unlisted', 'warn', { file: name }));
-      unlisted += 1;
+      addBadName(describeAssetName(name));
+    } else {
+      storable.push(name);
+      if (!listedKeys.has(name.normalize('NFC')) && unlisted < MAX_FLAGS_PER_KIND) {
+        flags.push(newFlag('assets.unlisted', 'warn', { file: name }));
+        unlisted += 1;
+      }
     }
+  }
+  for (const entry of notPackableAmong(storable, assetsDir).slice(0, MAX_FLAGS_PER_KIND)) {
+    const params = { file: describeAssetName(entry.name), reasonCode: entry.code };
+    if (entry.other !== undefined) params.other = describeAssetName(entry.other);
+    flags.push(newFlag('assets.notPackable', 'warn', params));
   }
   const nameParams = (row) => ({ file: describeAssetName(row.file) });
   addRowFlags(flags, rows, 'assets.badName', (row) => !isStorableAssetName(storedAssetName(row.file)), nameParams);
-  addRowFlags(flags, rows, 'assets.missingFile', (row) => !present.has(assetName(row.file)));
+  addRowFlags(flags, rows, 'assets.missingFile', (row) => !presentKeys.has(assetKey(row.file)));
   addRowFlags(flags, rows, 'assets.noRights', (row) => row.rights.trim() === '');
   addRowFlags(flags, rows, 'assets.rightsUnknown', (row) => isUnknownRights(row.rights));
   addRowFlags(flags, rows, 'text.hiddenCharacters', hasHiddenText, (row) => ({ label: describeAssetName(row.file) }));
+  return flags;
+}
+
+// Text in the state and the manifest that a person could have put there with an editor.
+function storedTextProblems(packData, schema) {
+  const stateFile = (schema.generatedFiles && schema.generatedFiles.state) || 'docs/intake-state.json';
+  const manifestFile = (schema.generatedFiles && schema.generatedFiles.manifest) || 'docs/intake-manifest.json';
+  const flags = [];
+  const flag = (label) => flags.push(newFlag('text.hiddenCharacters', 'warn', { label }));
+  const hidden = (value) => typeof value === 'string' && hasHiddenCharacters(value);
+  const { state, manifest } = packData;
+  if (isPlainObject(state)) {
+    for (const field of ['recipient', 'notes']) if (hidden(state[field])) flag(`${stateFile} (${field})`);
+  }
+  if (isPlainObject(manifest)) {
+    if (isPlainObject(manifest.project) && hidden(manifest.project.name)) flag(`${manifestFile} (project)`);
+    const people = Array.isArray(manifest.respondents) ? manifest.respondents : [];
+    if (people.some((person) => isPlainObject(person) && (hidden(person.name) || hidden(person.role)))) flag(`${manifestFile} (respondents)`);
+  }
   return flags;
 }
 
@@ -355,7 +415,8 @@ export function validatePackData(packData, schema, opts = {}) {
       questions[flag.qid].flags.push({ id: flag.id, severity: flag.severity, params: flag.params });
     }
   }
-  for (const flag of assetProblems(packData.assets)) flags.push(flag);
+  for (const flag of assetProblems(packData.assets, (schema.generatedFiles && schema.generatedFiles.assetsDir) || 'docs/assets')) flags.push(flag);
+  for (const flag of storedTextProblems(packData, schema)) flags.push(flag);
   for (const flag of crossProblems(packData, schema, answers, statuses)) flags.push(flag);
 
   const blocking = Object.entries(questions)

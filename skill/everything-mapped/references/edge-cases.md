@@ -19,6 +19,11 @@
 2. Read back the current answer in one or two lines and ask for the new version.
 3. Write the complete new answer through answer.mjs; it replaces the old one. For lists, send the whole list, not only
    the changed item. Read the change back.
+4. If the changed answer switches off another question that already has an answer (for example the kind of project
+   changes from redesign to new site, which switches off the question about the existing site), answer.mjs refuses
+   with exit code 2 and writes nothing; it names the question and the answer that controls it. Ask the person whether
+   the old answer should go. If it should, send that question with status `missing` in the same input as the change;
+   if not, keep the earlier answer.
 
 ## Contradictory answers
 

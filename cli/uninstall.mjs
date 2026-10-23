@@ -2,9 +2,9 @@
 
 import { assertNoPositionals, parseArgs } from './args.mjs';
 import { CliError } from './errors.mjs';
-import { say, sayLeftInPlace } from './output.mjs';
+import { say, sayLeftInPlace, sayStaleBackups } from './output.mjs';
 import { resolveScopes } from './scope.mjs';
-import { assertParentsSafe, applyRemoval, inspectSkillFolder, planRemoval, skillFolderFor } from './skill-folder.mjs';
+import { applyRemoval, assertParentsSafe, findStaleBackups, inspectSkillFolder, planRemoval, skillFolderFor } from './skill-folder.mjs';
 
 export const UNINSTALL_SPEC = {
   booleans: ['claude', 'codex', 'global', 'user', 'local', 'dry-run'],
@@ -26,6 +26,7 @@ function planUninstall(targets, tools, io, t) {
   for (const { scope, baseDir } of targets) {
     for (const tool of tools) {
       assertParentsSafe(baseDir, tool);
+      sayStaleBackups(io, t, findStaleBackups(baseDir, tool));
       const folder = skillFolderFor(baseDir, tool);
       if (inspectSkillFolder(folder) === 'none') {
         say(io, t('ui.install.remove.notFound', { path: folder }));
@@ -42,7 +43,7 @@ function removeOne(item, io, t) {
   let result;
   try {
     assertParentsSafe(item.baseDir, item.tool);
-    result = applyRemoval(item.folder, item.plan);
+    result = applyRemoval(item.folder, item.plan, item.baseDir);
   } catch (error) {
     if (error instanceof CliError) throw error;
     throw new CliError('ui.install.error.removeFailed', { path: item.folder, message: error.message }, 3);

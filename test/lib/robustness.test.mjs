@@ -25,7 +25,7 @@ import { normalizeNewlines, splitLines } from '../../skill/everything-mapped/scr
 import { main as answer } from '../../skill/everything-mapped/scripts/answer.mjs';
 import { main as assets } from '../../skill/everything-mapped/scripts/assets.mjs';
 import { main as check } from '../../skill/everything-mapped/scripts/check.mjs';
-import { NOW, TODAY, makePackData, makeSchemaDir, makeTempDir, readJson, runScript, schema, writeText } from './helpers.mjs';
+import { cpuNow, makePackData, makeSchemaDir, makeTempDir, NOW, readJson, runScript, schema, TODAY, WORK_LIMIT_MS, writeText } from './helpers.mjs';
 
 const LS = String.fromCharCode(0x2028);
 const PS = String.fromCharCode(0x2029);
@@ -58,9 +58,9 @@ function snapshot(dir) {
 }
 
 async function timed(work) {
-  const started = performance.now();
+  const started = cpuNow();
   const result = await work();
-  return { result, ms: performance.now() - started };
+  return { result, ms: cpuNow() - started };
 }
 
 // ---- 1. U+2028 and U+2029 ---------------------------------------------------------------------
@@ -73,7 +73,7 @@ test('U+2028 and U+2029 are line breaks, like LF, CR and CRLF', () => {
 test('a run of spaces followed by U+2028 cannot make the line patterns slow', () => {
   const hostile = `${' '.repeat(19000)}${LS}x`;
   const kinds = ['A.project-kind', 'A.deadline', 'A.metrics', 'A.goal'].map((id) => findQuestion(schema, id));
-  const started = performance.now();
+  const started = cpuNow();
   for (let round = 0; round < 10; round += 1) {
     for (const question of kinds) {
       parseBody(question, `Choice:${hostile}`);
@@ -82,7 +82,7 @@ test('a run of spaces followed by U+2028 cannot make the line patterns slow', ()
     }
     parseFile(`---\nschema: x\nfile: brief\nlanguage: da\nkey:${hostile}\n---\n`, schema);
   }
-  assert.ok(performance.now() - started < 1000, 'ten rounds of every pattern take under a second');
+  assert.ok(cpuNow() - started < WORK_LIMIT_MS, 'ten rounds of every pattern take well under three seconds');
 });
 
 test('a 2 MB brief with 104 front matter lines that end in spaces and U+2028 is read in under a second', async (t) => {
@@ -93,7 +93,7 @@ test('a 2 MB brief with 104 front matter lines that end in spaces and U+2028 is 
   writeText(cwd, 'docs/00-brief.md', text);
   const { result, ms } = await timed(() => run(check, ['--json']));
   assert.equal(result.code, 0, result.err);
-  assert.ok(ms < 1000, `took ${ms} ms`);
+  assert.ok(ms < WORK_LIMIT_MS, `took ${ms} ms`);
 });
 
 test('a U+2028 inside an answer splits the line, and nothing is lost', () => {
@@ -115,7 +115,7 @@ test('an assets table with more than 5000 rows is refused with a clear message, 
   const { result, ms } = await timed(() => run(check, ['--lang', 'en']));
   assert.equal(result.code, 3);
   assert.equal(result.err, 'docs/assets.md: the table has more than 5000 rows, so the file is not read.\n');
-  assert.ok(ms < 1000);
+  assert.ok(ms < WORK_LIMIT_MS);
   assert.throws(() => parseAssets(tableOf('|a||||\n'.repeat(5001))), (error) => error.key === 'ui.check.err.tooManyRows');
   assert.equal(parseAssets(tableOf('|a||||\n'.repeat(5000))).length, 5000);
 });

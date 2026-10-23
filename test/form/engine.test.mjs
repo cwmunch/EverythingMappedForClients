@@ -572,7 +572,7 @@ test('loading form data cleans what is merely unusable and says how much it clea
   };
   const result = engine.restoreState(JSON.parse(JSON.stringify(hostile)));
   assert.equal(result.ok, true);
-  assert.deepEqual(plain(result.notes), { cleaned: 3, ignored: 3, droppedItems: 0, droppedFiles: 0, reattach: ['evil-2.png'] }, 'one text and two file names were changed; one question and two files were left out; one file must be attached again');
+  assert.deepEqual(plain(result.notes), { cleaned: 7, ignored: 3, droppedItems: 0, droppedFiles: 0, reattach: ['evil-2.png'] }, 'seven values were changed (a name given as a number, a text with a character that cannot be saved, a note and a row and a rights text that were numbers, two file names); one question and two files were left out; one file must be attached again');
   const state = plain(result.state);
   assert.equal(state.language, 'en');
   assert.equal(state.depth, 'standard');

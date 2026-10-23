@@ -471,6 +471,11 @@ test('together the fixture packs trigger every flag of FORMAT.md section 14', ()
   for (const name of ['pack-broken', 'pack-en-partial', 'pack-da-complete']) {
     for (const flag of fixtureReport(name).flags) seen.add(flag.id);
   }
+  // A file name that the zip refuses cannot be kept in a fixture folder (Windows could not check it
+  // out), so this flag is triggered with pack data in memory.
+  const data = makePackData([]);
+  data.assets = { rows: [], present: ['con.png'], invalid: [] };
+  for (const flag of validatePackData(data, schema, { today: TODAY }).flags) seen.add(flag.id);
   assert.deepEqual([...seen].sort(), [...FLAG_IDS].sort());
 });
 

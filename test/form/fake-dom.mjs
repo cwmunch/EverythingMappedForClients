@@ -172,6 +172,17 @@ export class FakeDocument {
   }
 }
 
+// Asserts that two elements are the same one. assert.equal on elements would, when it fails, write
+// out both of them with their whole page around them (the owner document, every listener), which
+// can take gigabytes; this says which two elements were meant, in a few words.
+export function same(actual, expected, message = 'not the same element') {
+  if (actual === expected) return;
+  const name = (element) => (element === null || element === undefined ? String(element) : `${element.localName ?? typeof element}${element.id ? `#${element.id}` : ''}${element.className ? `.${element.className}` : ''}`);
+  const error = new Error(`${message}: got ${name(actual)}, wanted ${name(expected)}`);
+  error.name = 'AssertionError';
+  throw error;
+}
+
 // Every element below `root` (and `root` itself) that the test accepts.
 export function findAll(root, accept) {
   const found = [];
@@ -234,8 +245,9 @@ export function createFakeWindow(options = {}) {
   let nextId = 1;
   const win = {
     reloads: 0,
-    location: { protocol: options.protocol ?? 'https:', reload: () => { win.reloads += 1; } },
+    location: options.noLocation ? undefined : { protocol: options.protocol ?? 'https:', reload: () => { win.reloads += 1; } },
     addEventListener: (type, listener) => listeners.set(type, [...(listeners.get(type) ?? []), listener]),
+    removeEventListener: (type, listener) => listeners.set(type, (listeners.get(type) ?? []).filter((entry) => entry !== listener)),
     navigator: { language: options.language ?? 'en-GB' },
     localStorage: options.storage === undefined ? createMemoryStorage() : options.storage,
     matchMedia: () => ({ matches: Boolean(options.narrow) }),
@@ -280,6 +292,7 @@ export function createFakeWindow(options = {}) {
       }
     },
     pendingTimers: () => timers.size,
+    listenerCount: (type) => (listeners.get(type) ?? []).length,
     // Fires an event on the window (like "load" or "pagehide"); `extra` is added to the event.
     fire(type, extra = {}) {
       for (const listener of listeners.get(type) ?? []) listener({ type, ...extra });

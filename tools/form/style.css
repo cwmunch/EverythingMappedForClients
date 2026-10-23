@@ -200,6 +200,7 @@ p {
 
 .setup {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 1rem;
   margin-bottom: 1.5rem;
 }
@@ -353,7 +354,8 @@ legend {
   overflow-wrap: anywhere;
 }
 
-.file {
+.file,
+input[type="file"] {
   max-width: 100%;
   font: inherit;
 }
@@ -697,9 +699,6 @@ legend {
 }
 
 .sync {
-  position: sticky;
-  top: 0;
-  z-index: 5;
   margin: 0 0 1rem;
   padding: 0.75rem 1rem;
   border: 1px solid var(--line);
@@ -716,6 +715,15 @@ legend {
   display: flex;
   flex-wrap: wrap;
   gap: 0.75rem;
+}
+
+/* On a phone the notice would cover a third of the screen, so it stays where it is and the focus is moved to it. */
+@media (min-width: 40rem) {
+  .sync {
+    position: sticky;
+    top: 0;
+    z-index: 5;
+  }
 }
 
 .finish-block .btn {

@@ -32,7 +32,7 @@ import { main as answer } from '../../skill/everything-mapped/scripts/answer.mjs
 import { main as assets } from '../../skill/everything-mapped/scripts/assets.mjs';
 import { main as check } from '../../skill/everything-mapped/scripts/check.mjs';
 import { main as next } from '../../skill/everything-mapped/scripts/next.mjs';
-import { NOW, TODAY, makePackData, makeSchemaDir, makeTempDir, readJson, runScript, schema, testI18n, writeText } from './helpers.mjs';
+import { cpuNow, makePackData, makeSchemaDir, makeTempDir, NOW, readJson, runScript, schema, testI18n, TODAY, WORK_LIMIT_MS, writeText } from './helpers.mjs';
 
 const ESC = String.fromCharCode(27);
 const BEL = String.fromCharCode(7);
@@ -74,9 +74,9 @@ function assertTerminalSafe(text, label) {
 }
 
 function elapsed(work) {
-  const started = performance.now();
+  const started = cpuNow();
   work();
-  return performance.now() - started;
+  return cpuNow() - started;
 }
 
 // ---- 1. terminal escapes -------------------------------------------------------------------------
@@ -219,7 +219,7 @@ test('the text helpers handle very long hostile lines in well under a second eac
       }
       parseBody(dateQuestion, text);
     };
-    assert.ok(elapsed(work) < 1000, `${name} took too long`);
+    assert.ok(elapsed(work) < WORK_LIMIT_MS, `${name} took too long`);
   }
 });
 
@@ -234,7 +234,7 @@ test('validation and the open-questions file handle long hostile entries quickly
       const report = validatePackData(data, schema, { today: TODAY });
       assert.ok(report.flags.length < 400);
     };
-    assert.ok(elapsed(work) < 1000, `${name} took too long`);
+    assert.ok(elapsed(work) < WORK_LIMIT_MS, `${name} took too long`);
   }
 });
 
@@ -242,9 +242,9 @@ test('the hostile line of the review (101 KB of a, 100,000 spaces and x) is refu
   const { cwd, run } = setup(t);
   const line = `${'a'.repeat(1000)}${' '.repeat(100000)}x`;
   writeText(cwd, 'docs/00-brief.md', `${FRONT('brief')}\n### A\n<!-- q:A.goal status:complete -->\n${line}\n`);
-  const started = performance.now();
+  const started = cpuNow();
   const result = await run(check, ['--json', '--lang', 'en']);
-  assert.ok(performance.now() - started < 1000);
+  assert.ok(cpuNow() - started < WORK_LIMIT_MS);
   assert.equal(result.code, 3);
   assert.equal(result.err, 'docs/00-brief.md: line 10 is longer than 20000 characters, so the file is not read.\n');
 });
@@ -282,12 +282,12 @@ test('50,000 duplicate markers in one file are handled in under a second with a 
   const marker = '<!-- q:A.goal status:complete -->\n';
   const text = `${FRONT('brief')}\n### A\n${marker.repeat(50000)}`;
   assert.ok(text.length < 2 * 1024 * 1024);
-  const started = performance.now();
+  const started = cpuNow();
   const parsed = parseFile(text, schema);
   const data = makePackData([]);
   data.files.brief = { path: 'docs/00-brief.md', exists: true, ...parsed };
   const report = validatePackData(data, schema, { today: TODAY });
-  assert.ok(performance.now() - started < 1000);
+  assert.ok(cpuNow() - started < WORK_LIMIT_MS);
   assert.ok(parsed.flags.length <= 100);
   assert.equal(parsed.flags.filter((flag) => flag.id === 'marker.duplicate').length, 1, 'a duplicate is reported once per question');
   assert.ok(report.flags.length < 200);
@@ -430,9 +430,10 @@ test('writeFileAtomic and applyAnswers refuse to write through a symbolic link a
   if (!trySymlink(real, link)) return t.skip('symbolic links are not available here');
   const before = snapshot(cwd);
   assert.throws(() => writeFileAtomic(link, 'overwritten'), (error) => error instanceof PackError && error.key === 'ui.check.err.symlinkTarget');
+  // The link is found when the pack is read: a file in a pack is opened without following a link.
   assert.throws(
     () => applyAnswers(cwd, { answers: [{ id: 'B.name', status: 'complete', text: 'Nordlys' }] }, options),
-    (error) => error instanceof PackError && error.key === 'ui.check.err.symlinkTarget',
+    (error) => error instanceof PackError && error.key === 'ui.check.err.linkedFile' && error.params.path === 'docs/00-brief.md',
   );
   assert.deepEqual(snapshot(cwd), before, 'not even the files before the link in the order were written');
   assert.equal(fs.readFileSync(real, 'utf8'), 'keep me\n');

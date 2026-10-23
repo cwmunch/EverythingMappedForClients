@@ -17,6 +17,8 @@ export function resolveBaseDir(options, ctx) {
 
   const baseDir = options.user ? ctx.homedir() : path.resolve(ctx.cwd, options.dir ?? '.');
   const scope = options.user ? 'user' : 'project';
+  // A relative HOME would be read against the folder the command is run in, which is not the home folder.
+  if (options.user && baseDir !== '' && !path.isAbsolute(baseDir)) throw new CliError('ui.install.error.homeNotAbsolute', { dir: baseDir });
 
   let stat;
   try {
@@ -42,8 +44,18 @@ export function resolveScopes(values, ctx) {
   if (wantLocal) scopes.push(resolveBaseDir({ dir: values.dir }, ctx));
   if (wantGlobal) scopes.push(resolveBaseDir({ user: true }, ctx));
 
-  if (scopes.length === 2 && fs.realpathSync(scopes[0].baseDir) === fs.realpathSync(scopes[1].baseDir)) {
+  if (scopes.length === 2 && isSameFolder(scopes[0].baseDir, scopes[1].baseDir)) {
     throw new CliError('ui.install.error.sameFolder', { dir: scopes[0].baseDir });
   }
   return scopes;
+}
+
+// True when both paths lead to the same folder: the native real path is the same (it also fixes the
+// letter case on Windows and macOS, where "c:\users\bob" and "C:\Users\Bob" are one folder), or both
+// have the same device and file number (a bind mount or another way to reach the same folder).
+function isSameFolder(first, second) {
+  if (fs.realpathSync.native(first) === fs.realpathSync.native(second)) return true;
+  const a = fs.statSync(first, { bigint: true });
+  const b = fs.statSync(second, { bigint: true });
+  return a.ino !== 0n && a.ino === b.ino && a.dev === b.dev;
 }

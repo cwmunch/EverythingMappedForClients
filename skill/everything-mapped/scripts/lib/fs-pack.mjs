@@ -7,18 +7,21 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { LANGUAGES, loadI18n, resolveLanguage } from './i18n.mjs';
-import { assertNotLinked, buildManifest } from './manifest.mjs';
+import { assertNotLinked, buildManifest, openRegularFile, readBoundedBytes } from './manifest.mjs';
 import { parseAssets, parseFile } from './parse.mjs';
 import { renderAssets, renderFile, renderOpenQuestions } from './render.mjs';
-import { checkAnswerInput, effectiveLevel, entryFromInput, findQuestion } from './rules.mjs';
+import { checkAnswerInput, effectiveLevel, entryFromInput, findQuestion, switchedOffQuestions } from './rules.mjs';
 import { DEFAULT_SCHEMA_DIR, loadSchema } from './schema.mjs';
 import {
   InputError,
   MAX_ASSET_BYTES,
   MAX_ASSET_FILES,
   MAX_ASSET_ROWS,
+  MAX_BODY_CHARS,
+  MAX_FIELD_CHARS,
   MAX_LINE_CHARS,
   MAX_JSON_FILE_BYTES,
+  MAX_RESPONDENT_LINE_CHARS,
   MAX_TEXT_FILE_BYTES,
   PackError,
   RESPONDENT_LINE_SEPARATOR,
@@ -32,6 +35,7 @@ import {
   isoDateTime,
   joinLines,
   localDate,
+  neutralizeHiddenCharacters,
   parseArgv,
   sanitizeForTerminal,
   uniq,
@@ -95,21 +99,29 @@ function describeBytes(bytes) {
   return `${bytes / (1024 * 1024)} MB`;
 }
 
-function readUtf8(absolute, shown) {
-  try {
-    return fs.readFileSync(absolute, 'utf8').replace(/^\uFEFF/, '');
-  } catch {
-    throw new PackError('ui.check.err.unreadable', { path: shown });
-  }
-}
-
-// The text of a file, or null when it does not exist. A file over the limit is refused unread.
+// The text of a file, or null when it does not exist. The file is opened without following a link
+// and without waiting (see openRegularFile): a link or anything that is not a regular file is
+// refused with a message that names it. A file over the limit is refused unread.
 function readIfExists(absolute, shown, limit = MAX_TEXT_FILE_BYTES) {
-  const stat = fs.statSync(absolute, { throwIfNoEntry: false });
-  if (!stat) return null;
-  if (!stat.isFile()) throw new PackError('ui.check.err.unreadable', { path: shown });
-  if (stat.size > limit) throw new PackError('ui.check.err.fileTooLarge', { path: shown, limit: describeBytes(limit) });
-  return readUtf8(absolute, shown);
+  let descriptor;
+  try {
+    descriptor = openRegularFile(absolute);
+  } catch (error) {
+    if (error.code === 'ENOENT') return null;
+    throw new PackError(error.code === 'ELOOP' || error.code === 'EMLINK' ? 'ui.check.err.linkedFile' : 'ui.check.err.unreadable', { path: shown });
+  }
+  try {
+    const size = fs.fstatSync(descriptor).size;
+    if (size > limit) throw new PackError('ui.check.err.fileTooLarge', { path: shown, limit: describeBytes(limit) });
+    const bytes = readBoundedBytes(descriptor, limit, size);
+    if (bytes === null) throw new PackError('ui.check.err.fileTooLarge', { path: shown, limit: describeBytes(limit) });
+    return bytes.toString('utf8').replace(/^\uFEFF/, '');
+  } catch (error) {
+    if (error instanceof PackError) throw error;
+    throw new PackError('ui.check.err.unreadable', { path: shown });
+  } finally {
+    fs.closeSync(descriptor);
+  }
 }
 
 // Runs a parser and adds the file to the error it throws for text that is too long.
@@ -136,20 +148,13 @@ export function readInputFile(file, limit = MAX_TEXT_FILE_BYTES) {
   let descriptor;
   try {
     if (!fs.statSync(file).isFile()) return { problem: 'notFile' };
-    descriptor = fs.openSync(file, 'r');
-    if (!fs.fstatSync(descriptor).isFile()) return { problem: 'notFile' };
-    const buffer = Buffer.alloc(limit + 1);
-    let total = 0;
-    while (total < buffer.length) {
-      const read = fs.readSync(descriptor, buffer, total, buffer.length - total, null);
-      if (read === 0) break;
-      total += read;
-    }
-    if (total > limit) return { problem: 'tooLarge' };
-    const text = buffer.toString('utf8', 0, total);
+    descriptor = openRegularFile(file, { followLinks: true });
+    const bytes = readBoundedBytes(descriptor, limit, fs.fstatSync(descriptor).size);
+    if (bytes === null) return { problem: 'tooLarge' };
+    const text = bytes.toString('utf8');
     return { text: text.charCodeAt(0) === 0xfeff ? text.slice(1) : text };
-  } catch {
-    return { problem: 'unreadable' };
+  } catch (error) {
+    return { problem: error && error.code === 'ENOTFILE' ? 'notFile' : 'unreadable' };
   } finally {
     if (descriptor !== undefined) fs.closeSync(descriptor);
   }
@@ -200,26 +205,67 @@ function readAnswerFile(root, file, schema) {
   return { path: file.path, exists: true, ...parsed };
 }
 
-// Files below a folder as forward-slash names; hidden and temporary files (see isPackFile) and anything
-// that is not a plain file are left out.
-function listPlainFiles(directory, shown, prefix = '') {
-  let entries;
-  try {
-    entries = fs.readdirSync(directory, { withFileTypes: true });
-  } catch (error) {
-    if (error.code === 'ENOENT') return [];
-    throw new PackError('ui.check.err.unreadable', { path: shown });
-  }
-  const names = [];
-  for (const entry of entries) {
-    if (!isPackFile(entry.name)) continue;
-    if (entry.isDirectory()) {
-      for (const nested of listPlainFiles(path.join(directory, entry.name), shown, `${prefix}${entry.name}/`)) names.push(nested);
-    } else if (entry.isFile()) {
-      names.push(`${prefix}${entry.name}`);
+// A file name as bytes, written so that it can be read: the parts that are UTF-8 as they are, every
+// other byte as <0xHH>, and the characters that cannot be seen as <U+XXXX>.
+function showNameBytes(name) {
+  const decoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
+  let shown = '';
+  let index = 0;
+  while (index < name.length) {
+    const lead = name[index];
+    let length = 0;
+    if (lead < 0x80) length = 1;
+    else if (lead >= 0xf0) length = 4;
+    else if (lead >= 0xe0) length = 3;
+    else if (lead >= 0xc0) length = 2;
+    let character = null;
+    if (length > 0 && index + length <= name.length) {
+      try {
+        character = decoder.decode(name.subarray(index, index + length));
+      } catch {
+        character = null;
+      }
+    }
+    if (character === null) {
+      shown += `<0x${lead.toString(16).toUpperCase().padStart(2, '0')}>`;
+      index += 1;
+    } else {
+      shown += character;
+      index += length;
     }
   }
-  return names.sort();
+  return describeAssetName(shown);
+}
+
+// Files below a folder as forward-slash names; hidden and temporary files (see isPackFile) and anything
+// that is not a plain file are left out. The folder is read as bytes: a name that is not valid UTF-8
+// cannot be used as text, so it is not listed in `names`. It goes into `invalid` as it is shown by
+// showNameBytes (a folder with such a name is listed once and not entered).
+function listPlainFiles(directory, shown, prefix = '', found = { names: [], invalid: [] }) {
+  let entries;
+  try {
+    entries = fs.readdirSync(directory, { withFileTypes: true, encoding: 'buffer' });
+  } catch (error) {
+    if (error.code === 'ENOENT') return found;
+    throw new PackError('ui.check.err.unreadable', { path: shown });
+  }
+  for (const entry of entries) {
+    const bytes = Buffer.from(entry.name);
+    const name = bytes.toString('utf8');
+    if (!isPackFile(name)) continue;
+    const isFolder = entry.isDirectory();
+    if (!isFolder && !entry.isFile()) continue;
+    if (!Buffer.from(name, 'utf8').equals(bytes)) {
+      found.invalid.push(`${prefix}${showNameBytes(bytes)}`);
+    } else if (isFolder) {
+      listPlainFiles(path.join(directory, name), shown, `${prefix}${name}/`, found);
+    } else {
+      found.names.push(`${prefix}${name}`);
+    }
+  }
+  found.names.sort();
+  found.invalid.sort();
+  return found;
 }
 
 // The folders that hold the files of a pack must be real folders. A link there could point
@@ -240,7 +286,14 @@ export function assertAssetSizes(root, schema, names) {
   if (names.length > MAX_ASSET_FILES) throw new PackError('ui.check.err.tooManyAssets', { path: folder, limit: MAX_ASSET_FILES });
   for (const name of names) {
     const shown = `${folder}/${name}`;
-    if (fs.statSync(resolveInside(root, shown)).size > MAX_ASSET_BYTES) {
+    let size;
+    try {
+      size = fs.statSync(resolveInside(root, shown)).size;
+    } catch (error) {
+      if (error instanceof PackError) throw error;
+      throw new PackError('ui.check.err.assetUnreadable', { path: shown });
+    }
+    if (size > MAX_ASSET_BYTES) {
       throw new PackError('ui.check.err.assetTooLarge', { path: shown, limit: describeBytes(MAX_ASSET_BYTES) });
     }
   }
@@ -250,9 +303,11 @@ function readAssets(root, schema) {
   const tablePath = schema.generatedFiles.assets;
   const tableText = readIfExists(resolveInside(root, tablePath), tablePath);
   const directory = resolveInside(root, schema.generatedFiles.assetsDir);
+  const listing = listPlainFiles(directory, schema.generatedFiles.assetsDir);
   return {
     rows: tableText === null ? [] : parseWithPath(tablePath, () => parseAssets(tableText)),
-    present: listPlainFiles(directory, schema.generatedFiles.assetsDir),
+    present: listing.names,
+    invalid: listing.invalid,
   };
 }
 
@@ -296,17 +351,113 @@ export function isEmptyPack(pack) {
     !pack.state &&
     !pack.manifest &&
     pack.assets.rows.length === 0 &&
-    pack.assets.present.length === 0
+    pack.assets.present.length === 0 &&
+    (pack.assets.invalid ?? []).length === 0
   );
 }
 
 // ---------------------------------------------------------------------------------------------
 // Refreshing the generated files
 
-function writeIfChanged(absolute, text, current) {
-  if (current === text) return false;
-  writeFileAtomic(absolute, text);
-  return true;
+// A temporary or backup name next to a target. It ends in .tmp, so it is not a file of the pack
+// (see isPackFile) even if it is left behind.
+function siblingName(target) {
+  return `${target}.${randomBytes(6).toString('hex')}.tmp`;
+}
+
+// A second name for the file that is there now: a hard link, or a copy where links are not possible.
+function backUp(target, backup) {
+  try {
+    fs.linkSync(target, backup);
+  } catch {
+    fs.copyFileSync(target, backup, fs.constants.COPYFILE_EXCL);
+  }
+}
+
+// Makes the folder and tells which folders it made, so that they can be taken away again.
+function makeFolder(folder, created) {
+  const first = fs.mkdirSync(folder, { recursive: true });
+  if (first === undefined) return;
+  for (let current = folder; ; current = path.dirname(current)) {
+    created.push(current);
+    if (current === first) break;
+  }
+}
+
+// Writes several files so that either all of them are written or none is. Every new text is first
+// written to a temporary file next to its target; the files that are there now get a backup name
+// (a hard link, or a copy); then the temporary files are renamed over the targets in a tight loop.
+// When anything fails, the targets that were already replaced get their old file back, the
+// temporary files and the backups are removed, and the folders made here are taken away again.
+// The error is a PackError (ui.check.err.writeFailed, with the file and the code of the system); if
+// a file could not be put back as well, ui.check.err.rollbackFailed names it and says where the old
+// version is. A PackError from a check (a link in place of a file) is thrown as it is.
+//
+// files: [{ absolute, relative, text, current }]. A file whose text is already what is there
+// (text === current) is left alone. options.folders: absolute folders to make as part of the same
+// step. Returns the relative paths that were written.
+export function commitFiles(files, options = {}) {
+  const changed = files.filter((file) => file.current !== file.text);
+  const created = [];
+  const entries = [];
+  let working = changed.length > 0 ? changed[0].relative : '';
+  try {
+    for (const folder of options.folders ?? []) makeFolder(folder, created);
+    for (const file of changed) {
+      working = file.relative;
+      assertPlainTarget(file.absolute, file.relative);
+      makeFolder(path.dirname(file.absolute), created);
+      const entry = { file, temporary: siblingName(file.absolute), backup: null, renamed: false };
+      entries.push(entry);
+      fs.writeFileSync(entry.temporary, file.text, { encoding: 'utf8', flag: 'wx' });
+    }
+    for (const entry of entries) {
+      working = entry.file.relative;
+      if (fs.lstatSync(entry.file.absolute, { throwIfNoEntry: false })) {
+        entry.backup = siblingName(entry.file.absolute);
+        backUp(entry.file.absolute, entry.backup);
+      }
+    }
+    for (const entry of entries) {
+      working = entry.file.relative;
+      fs.renameSync(entry.temporary, entry.file.absolute);
+      entry.renamed = true;
+    }
+  } catch (error) {
+    const notRestored = [];
+    for (const entry of [...entries].reverse()) {
+      try {
+        if (entry.renamed && entry.backup) fs.renameSync(entry.backup, entry.file.absolute);
+        else if (entry.renamed) fs.rmSync(entry.file.absolute, { force: true });
+        else {
+          fs.rmSync(entry.temporary, { force: true });
+          if (entry.backup) fs.rmSync(entry.backup, { force: true });
+        }
+      } catch {
+        notRestored.push(entry.file.relative);
+      }
+    }
+    for (const folder of created) {
+      try {
+        fs.rmdirSync(folder);
+      } catch {
+        // The folder holds something else, so it stays.
+      }
+    }
+    if (error instanceof PackError) throw error;
+    const params = { path: working, code: error && error.code ? String(error.code) : 'EIO' };
+    if (notRestored.length > 0) throw new PackError('ui.check.err.rollbackFailed', { ...params, restored: notRestored.join(', ') });
+    throw new PackError('ui.check.err.writeFailed', params);
+  }
+  for (const entry of entries) {
+    if (!entry.backup) continue;
+    try {
+      fs.rmSync(entry.backup, { force: true });
+    } catch {
+      // A backup that stays is a .tmp file; it is not part of the pack.
+    }
+  }
+  return changed.map((file) => file.relative);
 }
 
 // A generated file larger than the read limit would make the whole pack unreadable.
@@ -367,10 +518,7 @@ export function refreshPack(rootDir, opts = {}) {
   const i18n = opts.i18n ?? loadI18n(language, opts.schemaDir);
   const depth = opts.depth ?? base.depth;
   const plan = planGenerated(root, schema, i18n, base, { depth, today: opts.today ?? localDate(now), now, contents: new Map() });
-  const written = [];
-  for (const file of plan.files) {
-    if (writeIfChanged(file.absolute, file.text, file.current)) written.push(file.relative);
-  }
+  const written = commitFiles(plan.files);
   return { written, pack: { ...base, manifest: plan.manifest }, report: plan.report, manifest: plan.manifest };
 }
 
@@ -404,17 +552,14 @@ export function writeAssetsTable(rootDir, rows, opts = {}) {
   checkTableLimits(rows, text, i18n);
   assertPlainTarget(tableAbsolute, tablePath);
   const tableFile = { relative: tablePath, absolute: tableAbsolute, text, current: readIfExists(tableAbsolute, tablePath) };
-  const base = { ...pack, language: pack.language ?? language, assets: { rows: parseAssets(text), present: pack.assets.present } };
-  const written = [];
+  const base = { ...pack, language: pack.language ?? language, assets: { ...pack.assets, rows: parseAssets(text) } };
   if (!pack.language) {
-    if (writeIfChanged(tableAbsolute, text, tableFile.current)) written.push(tablePath);
+    const written = commitFiles([tableFile]);
     return { written, pack: base, report: validatePack(base, schema, { today: opts.today ?? localDate(now) }) };
   }
   assertAssetSizes(root, schema, pack.assets.present);
   const plan = planGenerated(root, schema, i18n, base, { depth: base.depth, today: opts.today ?? localDate(now), now, contents: new Map([[tablePath, text]]) });
-  for (const file of [tableFile, ...plan.files]) {
-    if (writeIfChanged(file.absolute, file.text, file.current)) written.push(file.relative);
-  }
+  const written = commitFiles([tableFile, ...plan.files]);
   return { written, pack: { ...base, manifest: plan.manifest }, report: plan.report };
 }
 
@@ -434,15 +579,23 @@ function checkTopLevel(input, schema, pack, problems) {
   if (input.depth !== undefined && !(typeof input.depth === 'string' && Object.hasOwn(schema.depths, input.depth))) {
     add('ui.answer.err.badDepth', { depth: String(input.depth) });
   }
+  const tooLong = (field, value, limit) => {
+    if (typeof value === 'string' && value.trim().length > limit) add('ui.answer.err.fieldTooLong', { field, limit });
+  };
   for (const field of ['recipient', 'notes']) {
     if (input[field] !== undefined && typeof input[field] !== 'string') add('ui.answer.err.badField', { field });
     else if (hasHiddenCharacters(input[field])) add('ui.answer.err.controlChars', { where: field });
+    else tooLong(field, input[field], field === 'notes' ? MAX_BODY_CHARS : MAX_FIELD_CHARS);
   }
   const person = input.respondent;
   if (person !== undefined) {
     const valid = isPlainObject(person) && typeof person.name === 'string' && person.name.trim() !== '' && (person.role === undefined || typeof person.role === 'string');
     if (!valid) add('ui.answer.err.badRespondent');
     else if (hasHiddenCharacters(person.name) || hasHiddenCharacters(person.role)) add('ui.answer.err.controlChars', { where: 'respondent' });
+    else {
+      tooLong('respondent.name', person.name, MAX_FIELD_CHARS);
+      tooLong('respondent.role', person.role, MAX_FIELD_CHARS);
+    }
   }
   if (input.focus !== undefined) {
     const valid = Array.isArray(input.focus) && input.focus.every((id) => typeof id === 'string' && findQuestion(schema, id));
@@ -501,8 +654,13 @@ function respondentLabel(person) {
 function appendRespondent(existingText, person) {
   const list = splitRespondents(existingText);
   const label = respondentLabel(person);
-  if (!list.includes(label)) list.push(label);
-  return list.join('; ');
+  if (list.includes(label)) return list.join('; ');
+  list.push(label);
+  const line = list.join('; ');
+  if (line.length > MAX_RESPONDENT_LINE_CHARS) {
+    throw new InputError([{ key: 'ui.answer.err.fieldTooLong', params: { field: 'respondent', limit: MAX_RESPONDENT_LINE_CHARS } }]);
+  }
+  return line;
 }
 
 function planInput(input, schema, pack) {
@@ -510,9 +668,13 @@ function planInput(input, schema, pack) {
   if (!isPlainObject(input)) throw new InputError([{ key: 'ui.answer.err.notObject', params: {} }]);
   checkTopLevel(input, schema, pack, problems);
   const entries = checkAnswers(input, schema, problems);
-  const merged = collectAnswers(pack, schema);
+  const before = collectAnswers(pack, schema);
+  const merged = Object.assign(Object.create(null), before);
   for (const { question, entry } of entries) merged[question.id] = entry;
   for (const problem of notApplicableProblems(entries, merged, schema)) problems.push(problem);
+  // An answer that would be switched off by this input and is not cleared by it would vanish from the file.
+  const sent = new Set(entries.map(({ question }) => question.id));
+  for (const item of switchedOffQuestions(schema, before, merged, sent)) problems.push({ key: 'ui.answer.err.wouldSwitchOff', params: item });
   if (problems.length > 0) throw new InputError(problems);
   return { entries, merged };
 }
@@ -528,8 +690,8 @@ function nextState(input, pack, schema, language, depth, entries, now) {
     depth,
     currentModule: schema.moduleOrder.includes(last) ? last : schema.moduleOrder[0],
     focus: input.focus !== undefined ? knownIds(schema, input.focus) : previousFocus.filter((id) => !answered.has(id)),
-    recipient: input.recipient !== undefined ? input.recipient.trim() : (previous.recipient ?? ''),
-    notes: input.notes !== undefined ? input.notes : (previous.notes ?? ''),
+    recipient: input.recipient !== undefined ? input.recipient.trim() : neutralizeHiddenCharacters(previous.recipient),
+    notes: input.notes !== undefined ? input.notes : neutralizeHiddenCharacters(previous.notes),
     updatedAt: isoDateTime(now),
   };
 }
@@ -540,6 +702,22 @@ function frontMatterMeta(parsed, touched, input, language, today) {
   const previousUpdated = parsed.exists && parsed.frontMatter ? parsed.frontMatter.updated : undefined;
   const updated = !touched && isValidDate(previousUpdated) ? previousUpdated : today;
   return { language, respondent, updated };
+}
+
+// Reads the text that is about to be written. A line or an answer that has become too long to
+// read again (text that grows when it is stored, such as raw markup) is a problem with the input.
+function parseNewText(relative, text, schema) {
+  try {
+    return parseFile(text, schema);
+  } catch (error) {
+    if (error instanceof PackError && error.key === 'ui.check.err.lineTooLong') {
+      throw new InputError([{ key: 'ui.answer.err.resultLineTooLong', params: { path: relative, line: error.params.line, limit: error.params.limit } }]);
+    }
+    if (error instanceof PackError && error.key === 'ui.check.err.bodyTooLarge') {
+      throw new InputError([{ key: 'ui.answer.err.resultBodyTooLarge', params: { path: relative, id: error.params.id, limit: error.params.limit } }]);
+    }
+    throw error;
+  }
 }
 
 // Everything that can fail is worked out before the first file is written: sizes, links in place
@@ -560,7 +738,7 @@ function prepareWrite(plans, { root, schema, pack, state, depth, today, now, i18
   const files = {};
   const contents = new Map(plans.map((plan) => [plan.relative, plan.text]));
   for (const file of schema.files) {
-    files[file.id] = { path: file.path, exists: true, ...parseWithPath(file.path, () => parseFile(contents.get(file.path), schema)) };
+    files[file.id] = { path: file.path, exists: true, ...parseNewText(file.path, contents.get(file.path), schema) };
   }
   const base = { ...pack, language: state.language, depth, files, state };
   const plan = planGenerated(root, schema, i18n, base, { depth, today, now, contents });
@@ -609,11 +787,7 @@ export function applyAnswers(rootDir, input, opts = {}) {
   const assetsFolder = resolveInside(root, schema.generatedFiles.assetsDir);
   const ready = prepareWrite(plans, { root, schema, pack, state, depth, today, now, i18n });
 
-  fs.mkdirSync(assetsFolder, { recursive: true });
-  const written = [];
-  for (const plan of [...plans, ...ready.files]) {
-    if (writeIfChanged(plan.absolute, plan.text, plan.current)) written.push(plan.relative);
-  }
+  const written = commitFiles([...plans, ...ready.files], { folders: [assetsFolder] });
   return { written, report: ready.report, pack: ready.pack };
 }
 

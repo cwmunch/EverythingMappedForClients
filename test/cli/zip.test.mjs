@@ -1,14 +1,14 @@
 import assert from 'node:assert/strict';
-import { constants as bufferConstants } from 'node:buffer';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
-import { MAX_ENTRIES, ZipError, createZip, writeZip, writeZipFile } from '../../skill/everything-mapped/scripts/lib/zip.mjs';
-import { makeTempDir, writeFile } from './helpers.mjs';
+import { MAX_BYTES, MAX_ENTRIES, ZipError, assertEntryFits, createZip, writeZip, writeZipFile } from '../../skill/everything-mapped/scripts/lib/zip.mjs';
+import { makeTempDir, wordSalad, writeFile } from './helpers.mjs';
 import { unzip } from './unzip.mjs';
 
 const fixedDate = new Date(Date.UTC(2026, 9, 23, 14, 7, 9));
+
 
 // ---------------------------------------------------------------------------
 
@@ -80,7 +80,7 @@ test('a zip without entries is a valid empty archive', () => {
 
 test('a 2 MB file round trips, both compressible and random', () => {
   const size = 2 * 1024 * 1024;
-  const text = Buffer.alloc(size, 'Det her er en lang linje med tekst. ');
+  const text = wordSalad(size);
   const noise = crypto.randomBytes(size);
   const mixed = Buffer.concat([crypto.randomBytes(size / 2), Buffer.alloc(size / 2, 'x')]);
   const zip = createZip(
@@ -300,17 +300,11 @@ test('65535 entries are allowed, 65536 are refused with a clear message (no zip6
   );
 });
 
-test('a single file above 4 GiB is refused with a clear message (no zip64)', (t) => {
-  if (bufferConstants.MAX_LENGTH <= 2 ** 32) return t.skip('this Node.js cannot hold a buffer above 4 GiB');
-  let huge;
-  try {
-    huge = Buffer.alloc(2 ** 32);
-  } catch {
-    return t.skip('could not reserve 4 GiB of address space here');
-  }
+test('a single entry above 4 GiB is refused with a clear message (no zip64); checked with numbers, not with a 4 GiB buffer', () => {
+  assert.doesNotThrow(() => assertEntryFits(MAX_BYTES, 'edge.bin'));
   assert.throws(
-    () => createZip([{ name: 'huge.bin', data: huge }]),
-    (error) => error instanceof ZipError && error.code === 'tooLarge' && /zip64/.test(error.message),
+    () => assertEntryFits(MAX_BYTES + 1, 'huge.bin'),
+    (error) => error instanceof ZipError && error.code === 'tooLarge' && error.params.name === 'huge.bin' && /zip64/.test(error.message),
   );
 });
 
@@ -375,7 +369,7 @@ const date = new Date(Date.UTC(2026, 9, 23));
 
 function makeContentFiles(t) {
   const dir = makeTempDir(t);
-  const text = Buffer.alloc(3 * 1024 * 1024, 'Det her er tekst om bageriet. ');
+  const text = wordSalad(3 * 1024 * 1024);
   const noise = crypto.randomBytes(1024 * 1024 + 123);
   writeFile(path.join(dir, 'text.txt'), text);
   writeFile(path.join(dir, 'noise.bin'), noise);
@@ -508,4 +502,83 @@ test('writeZipFile replaces an older zip with the same name', async (t) => {
   await writeZipFile(target, [{ name: 'a.txt', data: 'first' }], { date });
   await writeZipFile(target, [{ name: 'a.txt', data: 'second' }], { date });
   assert.equal(unzip(fs.readFileSync(target)).get('a.txt').data.toString(), 'second');
+});
+
+// ---------------------------------------------------------------------------------------------
+// The ratio rule: an entry that deflate would shrink by more than 200 to 1 is stored
+
+test('an entry that would shrink by more than 200 to 1 is stored, the others are deflated', () => {
+  const zeros = Buffer.alloc(1024 * 1024);
+  const sentence = Buffer.alloc(300 * 1024, 'Det her er en lang linje med tekst. ');
+  const salad = wordSalad(300 * 1024);
+  const zip = createZip(
+    [
+      { name: 'zeros.bin', data: zeros },
+      { name: 'sentence.txt', data: sentence },
+      { name: 'salad.txt', data: salad },
+    ],
+    { date: fixedDate },
+  );
+  const entries = unzip(zip);
+
+  assert.equal(entries.get('zeros.bin').method, 0);
+  assert.equal(entries.get('sentence.txt').method, 0);
+  assert.equal(entries.get('salad.txt').method, 8);
+  assert.ok(entries.get('zeros.bin').data.equals(zeros), 'a stored entry is the file itself');
+  for (const [name, entry] of entries) {
+    if (entry.method === 8) assert.ok(entry.data.length <= entry.compressedSize * 200, `${name} would be refused by the receiving side`);
+  }
+});
+
+test('writeZipFile applies the same ratio rule and gives the same bytes as createZip', async (t) => {
+  const dir = makeTempDir(t);
+  const zeros = Buffer.alloc(2 * 1024 * 1024);
+  const salad = wordSalad(500 * 1024);
+  writeFile(path.join(dir, 'zeros.bin'), zeros);
+  writeFile(path.join(dir, 'salad.txt'), salad);
+
+  const target = path.join(dir, 'out.zip');
+  await writeZipFile(target, [{ name: 'docs/zeros.bin', path: path.join(dir, 'zeros.bin') }, { name: 'docs/salad.txt', path: path.join(dir, 'salad.txt') }], { date });
+  const entries = unzip(fs.readFileSync(target));
+  assert.equal(entries.get('docs/zeros.bin').method, 0);
+  assert.equal(entries.get('docs/salad.txt').method, 8);
+  assert.ok(entries.get('docs/zeros.bin').data.equals(zeros));
+
+  const inMemory = createZip([{ name: 'docs/zeros.bin', data: zeros }, { name: 'docs/salad.txt', data: salad }], { date });
+  assert.ok(fs.readFileSync(target).equals(inMemory));
+});
+
+// ---------------------------------------------------------------------------------------------
+// Files are opened without following links and without waiting
+
+test('writeZipFile refuses a link in place of a file, naming it, and writes nothing', async (t) => {
+  const dir = makeTempDir(t);
+  writeFile(path.join(dir, 'secret.txt'), 'private');
+  const link = path.join(dir, 'link.txt');
+  try {
+    fs.symlinkSync(path.join(dir, 'secret.txt'), link, 'file');
+  } catch {
+    return t.skip('symbolic links are not available here');
+  }
+  const before = fs.readdirSync(dir).sort();
+
+  await assert.rejects(
+    () => writeZipFile(path.join(dir, 'out.zip'), [{ name: 'docs/link.txt', path: link }], { date }),
+    (error) => error instanceof ZipError && error.code === 'unreadableFile' && error.params.name === 'docs/link.txt',
+  );
+  assert.deepEqual(fs.readdirSync(dir).sort(), before, 'no zip and no temporary file');
+});
+
+test('writeZipFile refuses anything that is not a regular file (a folder, a device) without waiting', async (t) => {
+  const dir = makeTempDir(t);
+  const targets = [dir];
+  if (process.platform !== 'win32') targets.push('/dev/null');
+  for (const target of targets) {
+    await assert.rejects(
+      () => writeZipFile(path.join(dir, 'out.zip'), [{ name: 'docs/odd', path: target }], { date }),
+      (error) => error instanceof ZipError && error.code === 'unreadableFile',
+      target,
+    );
+  }
+  assert.equal(fs.existsSync(path.join(dir, 'out.zip')), false);
 });

@@ -29,6 +29,9 @@ const EXPORT_FILES_BUDGET = 300 * 1024 * 1024;
 const IMPORT_MAX_BYTES = 400 * 1024 * 1024;
 // While a pack is built, the page gets a turn after about this many bytes of work.
 const YIELD_EVERY_BYTES = 8 * 1024 * 1024;
+// What is left out of the room for attached files at attaching time, besides the answer files: the
+// open-questions text and the new row of the file list are not known yet.
+const ATTACH_EXTRA_HEADROOM_BYTES = 1024 * 1024;
 // Work on a big file is done in slices of this size (a multiple of 64, the block size of SHA-256).
 const WORK_SLICE_BYTES = 4 * 1024 * 1024;
 const DEFLATE_SLICE_BYTES = 1024 * 1024;
@@ -125,9 +128,16 @@ function wrapLongLines(text, width) {
   return text.split('\n').map((line) => (line.length > width ? splitLongLine(line, width) : line)).join('\n');
 }
 
+// What is looked at of a text that may be far longer than its field takes (a loaded file can hold
+// millions of characters): twice the limit, so that what is removed from it cannot leave less than
+// the limit unless nearly everything is removed. The rest would be cut anyway.
+function boundedText(text, max) {
+  return text.length > max * 2 + 16 ? cutUnits(text, max * 2 + 16) : text;
+}
+
 // One line: breaks and tabs become spaces.
 function cleanLine(value, max) {
-  const text = typeof value === 'string' ? value : '';
+  const text = typeof value === 'string' ? boundedText(value, max) : '';
   return cutUnits(removeRefused(text.replace(/[\t\r\n]+/g, ' ').replace(SEPARATORS, ' ')).text, max);
 }
 
@@ -138,8 +148,8 @@ function cleanName(value, max) {
 
 // Several lines, as in a text area.
 function cleanBlock(value, max) {
-  const text = typeof value === 'string' ? value : '';
-  const plain = removeRefused(text.replace(/\r\n?/g, '\n').replace(SEPARATORS, '\n')).text;
+  const text = typeof value === 'string' ? boundedText(value, max) : '';
+  const plain = cutUnits(removeRefused(text.replace(/\r\n?/g, '\n').replace(SEPARATORS, '\n')).text, max);
   return cutUnits(wrapLongLines(plain, WRAP_WIDTH), max);
 }
 
@@ -387,13 +397,24 @@ function base64Parts(bytes) {
   return parts;
 }
 
+// The same in slices: `pause` (from makeYielder) gives the page its turns while a big file is made
+// into text. Calls `emit` with every piece.
+async function base64PartsAsync(bytes, pause, emit) {
+  for (let start = 0; start < bytes.length; start += BASE64_CHUNK_BYTES) {
+    const end = Math.min(bytes.length, start + BASE64_CHUNK_BYTES);
+    emit(base64Chunk(bytes, start, end));
+    await pause(end - start);
+  }
+}
+
 function bytesToBase64(bytes) {
   return base64Parts(bytes).join('');
 }
 
 // Returns a Uint8Array, or null when the text is not base64.
 function base64ToBytes(text) {
-  const clean = String(text).replace(/\s+/g, '');
+  const source = String(text);
+  const clean = /\s/.test(source) ? source.replace(/\s+/g, '') : source;
   if (clean.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(clean)) return null;
   const padding = clean.endsWith('==') ? 2 : clean.endsWith('=') ? 1 : 0;
   const out = new Uint8Array((clean.length / 4) * 3 - padding);
@@ -422,55 +443,11 @@ function dosDateTime(date) {
   };
 }
 
-// The rules for a name in the zip are the ones of the team's zip writer (scripts/lib/zip.mjs,
-// checkName), which uses node modules and so cannot be part of this page. This is a copy of them.
-// A test runs both over every code point and a table of tricky names, so the copy cannot drift.
-const ZIP_MAX_NAME_PART_BYTES = 255;
-const ZIP_MAX_NAME_CHARACTERS = 240;
-// Windows treats these as devices, with or without an extension; so do the superscript digits.
-const ZIP_DEVICE_NAMES = /^(?:CON|PRN|AUX|NUL|CONIN\$|CONOUT\$|COM[1-9\xb9\xb2\xb3]|LPT[1-9\xb9\xb2\xb3])$/;
-// Control characters and invisible ones: [from, to] code points.
-const ZIP_FORBIDDEN_RANGES = [
-  [0x00, 0x1f],
-  [0x7f, 0x9f],
-  [0x61c, 0x61c],
-  [0x180e, 0x180e],
-  [0x200b, 0x200f],
-  [0x2028, 0x202e],
-  [0x2060, 0x2064],
-  [0x2066, 0x2069],
-  [0xfeff, 0xfeff],
-];
-// Characters Windows cannot store in a file name.
-const ZIP_FORBIDDEN_CHARACTERS = '<>:"|?*';
-
-function isZipForbiddenCode(code) {
-  return ZIP_FORBIDDEN_RANGES.some(([first, last]) => code >= first && code <= last);
-}
-
-// Why a zip entry name is refused, as a short code, or '' when it is fine.
-function zipNameProblem(name) {
-  if (typeof name !== 'string' || name === '') return 'empty';
-  if (LONE_SURROGATE.test(name)) return 'notText';
-  if (name.includes('\\')) return 'backslash';
-  if (name.startsWith('/') || /^[A-Za-z]:/.test(name)) return 'absolute';
-  for (const char of name) {
-    if (ZIP_FORBIDDEN_CHARACTERS.includes(char) || isZipForbiddenCode(char.codePointAt(0))) return 'character';
-  }
-  for (const segment of name.split('/')) {
-    if (segment === '') return 'emptyPart';
-    if (segment === '.' || segment === '..') return 'dots';
-    if (/[. ]$/.test(segment)) return 'ending';
-    if (ZIP_DEVICE_NAMES.test(segment.split('.')[0].trimEnd().toUpperCase())) return 'device';
-    if (encodeUtf8(segment).length > ZIP_MAX_NAME_PART_BYTES) return 'partTooLong';
-  }
-  if (Array.from(name).length > ZIP_MAX_NAME_CHARACTERS) return 'pathTooLong';
-  return '';
-}
-
+// A name in the zip is checked by the library's rule (nameProblems of util.mjs): the one the team's zip
+// writer and the checks of a pack use. The form has no copy of it.
 function checkedZipName(name) {
-  const problem = zipNameProblem(name);
-  if (problem !== '') throw new Error(`Invalid zip entry name ${JSON.stringify(name)}: ${problem}`);
+  const [problem] = nameProblems(name);
+  if (problem) throw new Error(`Invalid zip entry name ${JSON.stringify(name)}: ${problem.code}`);
   return encodeUtf8(name);
 }
 
@@ -596,16 +573,15 @@ async function createZipParts(entries, options = {}) {
   if (entries.length > ZIP_MAX_ENTRIES) throw new FormError('ui.form.err.tooManyFiles', { count: entries.length, max: ZIP_MAX_ENTRIES });
   const dos = dosDateTime(options.date || new Date());
   const compress = options.compress === false ? null : options.compress || deflateRawChunks;
-  const seen = new Set();
+  // Two names that are one file on Windows or macOS (case, the way an accent is written), or a file
+  // where another entry needs a folder: the library's rule, as in the team's zip writer.
+  const clash = entryNameProblems(entries.map((entry) => entry.name)).find((problem) => problem.code === 'duplicate' || problem.code === 'fileAndFolder');
+  if (clash) {
+    throw new Error(clash.code === 'duplicate' ? `The name ${JSON.stringify(clash.name)} appears twice` : `The name ${JSON.stringify(clash.name)} is a file and also a folder`);
+  }
   const prepared = [];
   const pause = makeYielder(options.yieldToPage);
-  for (const entry of entries) {
-    const item = await prepareZipEntry(entry, compress, pause);
-    const key = bytesToBase64(item.nameBytes);
-    if (seen.has(key)) throw new Error(`The name ${JSON.stringify(entry.name)} appears twice`);
-    seen.add(key);
-    prepared.push(item);
-  }
+  for (const entry of entries) prepared.push(await prepareZipEntry(entry, compress, pause));
   prepared.sort((first, second) => compareBytes(first.nameBytes, second.nameBytes));
 
   const parts = [];
@@ -643,15 +619,29 @@ async function createZipBytes(entries, options = {}) {
 // ---------------------------------------------------------------------------------------------
 // Names of attached files
 //
-// A name must pass three readers: the zip writer (zipNameProblem), the list of files in the pack
+// A name must pass three readers: the zip writer (nameProblems), the list of files in the pack
 // (isStorableAssetName: no control or hidden character, no space at an end) and the pack reader
 // (isPackFile: no hidden or temporary name). assetNameProblem asks all three; safeAssetName makes
 // any name pass them.
 
-// Characters a file name may not hold: those the zip writer refuses, those the library refuses
-// anywhere, and lone surrogates.
+// Characters that cannot be in a file name and are taken out of it: those the library refuses in a
+// name (control and hidden characters, joiners and direction marks, line separators: the rule is
+// nameProblems, asked for one character) and lone surrogates. The characters Windows cannot store
+// (< > : " | ? *) are not taken out but made into a dash (repairName).
+const NAME_CHARACTERS = new Map();
+
+function isForbiddenNameChar(char) {
+  const code = char.codePointAt(0);
+  if (code >= 0xd800 && code <= 0xdfff) return true;
+  if ('<>:"|?*'.includes(char)) return false;
+  if (!NAME_CHARACTERS.has(char)) {
+    NAME_CHARACTERS.set(char, nameProblems(`a${char}`).some((problem) => problem.code === 'forbiddenCharacter' || problem.code === 'notText'));
+  }
+  return NAME_CHARACTERS.get(char);
+}
+
 function isForbiddenNameCode(code) {
-  return isZipForbiddenCode(code) || isRefusedCode(code) || (code >= 0xd800 && code <= 0xdfff);
+  return isForbiddenNameChar(String.fromCodePoint(code));
 }
 
 function nameMarker(code) {
@@ -664,26 +654,22 @@ function showNameCharacters(value) {
   let shown = '';
   for (const char of String(value ?? '')) {
     const code = char.codePointAt(0);
-    shown += isForbiddenNameCode(code) ? nameMarker(code) : char;
+    shown += isForbiddenNameChar(char) ? nameMarker(code) : char;
   }
   return shown;
 }
 
 function removeNameCharacters(value) {
   let kept = '';
-  for (const char of String(value ?? '')) if (!isForbiddenNameCode(char.codePointAt(0))) kept += char;
+  for (const char of String(value ?? '')) if (!isForbiddenNameChar(char)) kept += char;
   return kept;
-}
-
-function foldName(name) {
-  return name.normalize('NFC').toLowerCase();
 }
 
 // Why `name`, a file name in the folder `directory` of the pack, is refused by the zip writer, the
 // list of files or the reader of a pack: a short code, or '' when it is fine everywhere.
 function assetNameProblem(name, directory) {
-  const zip = zipNameProblem(`${directory}/${name}`);
-  if (zip !== '') return zip;
+  const [zip] = nameProblems(`${directory}/${name}`);
+  if (zip) return zip.code;
   if (!isStorableAssetName(name)) return 'storable';
   return isPackFile(`${directory}/${name}`) ? '' : 'hidden';
 }
@@ -711,7 +697,7 @@ function repairName(value) {
   let name = value.trim().replace(/[<>:"|?*#%]/g, '-').replace(/\s+/g, '-');
   name = trimNameEnd(name.replace(/-{2,}/g, '-').replace(/^\.+/, ''));
   if (/^-*$/.test(name)) name = 'file';
-  if (ZIP_DEVICE_NAMES.test(name.split('.')[0].trimEnd().toUpperCase())) name = `_${name}`;
+  if (nameProblems(name).some((problem) => problem.code === 'deviceName')) name = `_${name}`;
   if (name.toLowerCase().endsWith('.tmp')) name = `${name.slice(0, -4)}-tmp`;
   return name;
 }
@@ -729,13 +715,13 @@ function numberedName(stem, extension, number) {
 }
 
 function uniqueName(name, taken) {
-  if (!taken.has(foldName(name))) return name;
+  if (!taken.has(foldPackName(name))) return name;
   const dot = name.lastIndexOf('.');
   const stem = dot > 0 ? name.slice(0, dot) : name;
   const extension = dot > 0 ? name.slice(dot) : '';
   for (let number = 2; ; number += 1) {
     const candidate = numberedName(stem, extension, number);
-    if (!taken.has(foldName(candidate))) return candidate;
+    if (!taken.has(foldPackName(candidate))) return candidate;
   }
 }
 
@@ -754,9 +740,10 @@ function safeAssetName(rawName, taken, directory = 'docs/assets') {
 // Texts of a record that came from outside (saved data, an imported file)
 
 // Cleans a value and counts it in notes.cleaned when cleaning changed what was given.
+// A value that is not text at all (a number, a list) is dropped and counted too.
 function cleanTracked(value, limit, notes) {
   const cleaned = cleanField(value, limit);
-  if (notes && typeof value === 'string' && cleaned !== value) notes.cleaned += 1;
+  if (notes && value !== undefined && value !== null && (typeof value !== 'string' || cleaned !== value)) notes.cleaned += 1;
   return cleaned;
 }
 
@@ -866,7 +853,7 @@ function createEngine(data) {
   // take at the moment; the page passes it, so what is allowed here is what the build allows.
   function attachmentProblem(state, file, textBytes = 0) {
     const name = cleanLine(file.name, MAX_NAME_BYTES);
-    const nominal = PACK_MAX_BYTES - PACK_HEADROOM_BYTES;
+    const nominal = PACK_MAX_BYTES - PACK_HEADROOM_BYTES - ATTACH_EXTRA_HEADROOM_BYTES;
     const room = nominal - textBytes;
     const limit = `${Math.floor(nominal / (1024 * 1024))} MB`;
     if (file.size > room) return { key: 'ui.form.files.tooBig', params: { name, limit } };
@@ -878,7 +865,7 @@ function createEngine(data) {
   // Adds a file. The name is cleaned (safeAssetName); when that changes it, `renamedFrom` keeps the
   // name the person gave, with the characters that were hidden made visible, so the page can say so.
   function addAsset(state, qid, file) {
-    const taken = new Set(state.assets.map((asset) => foldName(asset.name)));
+    const taken = new Set(state.assets.map((asset) => foldPackName(asset.name)));
     const name = safeAssetName(file.name, taken, schema.generatedFiles.assetsDir);
     const asset = {
       id: nextAssetId(state),
@@ -1031,6 +1018,9 @@ function createEngine(data) {
       answers: everything.inputs.length - inputs.length,
       files: state.assets.filter((asset) => asset.data && !inScope(asset.qid)).length,
     };
+    // Attached files that belong in the pack but have no content on this page (after a reload, or
+    // loaded from form data without them): they are left out, and the person is told which.
+    const lacking = state.assets.filter((asset) => !asset.data && inScope(asset.qid)).map((asset) => asset.name);
     const rows = usable.map((asset) => ({
       file: `assets/${asset.name}`,
       what: cleanField(asset.what, LIMITS.asset),
@@ -1054,7 +1044,7 @@ function createEngine(data) {
       return { id: file.id, path: file.path, text };
     });
     const report = validatePackData(packData, schema, { depth: state.depth, today });
-    return { now, today, inputs, problems, leftOut, entries, respondent, files, assetsText, rows, usable, packData, report };
+    return { now, today, inputs, problems, leftOut, lacking, entries, respondent, files, assetsText, rows, usable, packData, report };
   }
 
   function isVisible(report, id, depth) {
@@ -1215,8 +1205,11 @@ function createEngine(data) {
 
   // Everything that goes into the zip, as [{ name, data }] (names with the docs/ prefix), plus the
   // objects it was made from. The manifest and the state file are not listed in the manifest.
-  // options: { yieldToPage } as for createZipParts.
-  async function packEntries(state, analysis, options = {}) {
+  // options: { yieldToPage, beforeWork } as for buildPack.
+  async function packEntries(live, analysis, options = {}) {
+    // The page may change while the hashes are made (another language, a recipient typed): what goes
+    // into the pack is what was there when it began.
+    const state = { language: live.language, depth: live.depth, recipient: live.recipient, createdAt: live.createdAt };
     const generated = schema.generatedFiles;
     const stamp = isoDateTime(analysis.now);
     const openText = renderOpenQuestions(analysis.report, dictionaries[state.language]);
@@ -1226,6 +1219,9 @@ function createEngine(data) {
       { name: generated.assets, data: encodeUtf8(analysis.assetsText) },
     ];
     checkPackLimits(texts, analysis.usable);
+    // Here, with what the pack is made of read and checked, the page may be given a frame (so that a
+    // message written before the build is drawn before the long work starts).
+    if (typeof options.beforeWork === 'function') await options.beforeWork();
     const hashed = [...texts, ...analysis.usable.map((asset) => ({ name: `${generated.assetsDir}/${asset.name}`, data: asset.data }))];
     const pause = makeYielder(options.yieldToPage);
     const hashes = [];
@@ -1251,11 +1247,16 @@ function createEngine(data) {
   }
 
   // The zip of the whole pack. Throws FormError when an answer would be dropped, when nothing is
-  // answered or when the pack is too big. options: { now, today, compress, yieldToPage }.
+  // answered or when the pack is too big. options: { now, today, compress, yieldToPage, beforeWork }
+  // where beforeWork is an async function that is waited for before the long work starts.
   async function buildPack(state, options = {}) {
     const analysis = analyze(state, options);
     if (analysis.problems.length > 0) throw droppedError(state, analysis);
     if (!hasAnyAnswer(analysis.packData)) throw new FormError('ui.form.err.nothing');
+    // The library's own check of the file names (assets.badName, assets.notPackable): a pack that
+    // `check` would flag for a name is not made. Names from safeAssetName never are; this is the net.
+    const unfit = analysis.report.flags.find((flag) => flag.id === 'assets.notPackable' || flag.id === 'assets.badName');
+    if (unfit) throw new FormError('ui.form.err.fileName', { name: unfit.params.file });
     const built = await packEntries(state, analysis, options);
     const totalBytes = built.entries.reduce((sum, entry) => sum + entry.data.length, 0);
     if (totalBytes > PACK_MAX_BYTES) throw new FormError('ui.form.err.tooLarge');
@@ -1268,6 +1269,7 @@ function createEngine(data) {
       manifest: built.manifest,
       report: analysis.report,
       leftOut: analysis.leftOut,
+      lacking: analysis.lacking,
       totalBytes,
       large: totalBytes > SIZE_WARNING_BYTES,
     };
@@ -1333,8 +1335,9 @@ function createEngine(data) {
   // the files. The file never goes over what the loader accepts: when the base64 text of the attached
   // files would be over EXPORT_FILES_BUDGET, none of the files go in. The answers and the list of
   // files (names, descriptions, sizes) always do. `reattach` lists the files that are not in the
-  // file, by name, so the person can be told to attach them again.
-  function exportPlan(state, savedAt) {
+  // file and must be attached again, by name (a file of no bytes comes back by itself and is not
+  // listed). options: { yieldToPage }, as for buildPack.
+  async function exportPlan(state, savedAt, options = {}) {
     const withData = state.assets.filter((asset) => asset.data);
     const base64Total = withData.reduce((sum, asset) => sum + base64Length(asset.data.length), 0);
     const withFiles = base64Total <= EXPORT_FILES_BUDGET;
@@ -1342,6 +1345,7 @@ function createEngine(data) {
     const token = 'EMFC-ASSETS-PLACEHOLDER';
     const text = JSON.stringify({ ...saved, assets: token }, null, 2);
     const at = text.lastIndexOf(`"${token}"`);
+    const pause = makeYielder(options.yieldToPage);
     const parts = [];
     let bytes = 0;
     const literal = (piece) => {
@@ -1350,20 +1354,20 @@ function createEngine(data) {
     };
     literal(text.slice(0, at));
     literal('[');
-    state.assets.forEach((asset, index) => {
+    for (const [index, asset] of state.assets.entries()) {
       const meta = JSON.stringify(saved.assets[index]);
       if (index > 0) literal(',');
       if (withFiles && asset.data) {
         literal(`${meta.slice(0, -1)},"data":"`);
-        for (const piece of base64Parts(asset.data)) {
+        await base64PartsAsync(asset.data, pause, (piece) => {
           parts.push(piece);
           bytes += piece.length;
-        }
+        });
         literal('"}');
       } else {
         literal(meta);
       }
-    });
+    }
     literal(']');
     literal(text.slice(at + token.length + 2));
     literal('\n');
@@ -1372,18 +1376,19 @@ function createEngine(data) {
       parts,
       bytes,
       withFiles,
-      reattach: state.assets.filter((asset) => !withFiles || !asset.data).map((asset) => asset.name),
+      reattach: state.assets.filter((asset) => (!withFiles || !asset.data) && asset.size > 0).map((asset) => asset.name),
     };
   }
 
   // The pieces of exportPlan alone.
-  function exportParts(state, savedAt) {
-    return exportPlan(state, savedAt).parts;
+  async function exportParts(state, savedAt, options = {}) {
+    return (await exportPlan(state, savedAt, options)).parts;
   }
 
   // Puts the files of saved data into state. Nothing is dropped without being counted in notes.
   // A file that came without its content must be attached again: its name goes into notes.reattach.
-  function restoreAssets(list, state, notes) {
+  // `decoded` has the content of every file that came with one, decoded once (see savedShapeIsValid).
+  function restoreAssets(list, state, notes, decoded) {
     if (list.length > MAX_ATTACHMENTS) notes.droppedFiles += list.length - MAX_ATTACHMENTS;
     const taken = new Set();
     for (const item of list.slice(0, MAX_ATTACHMENTS)) {
@@ -1393,10 +1398,10 @@ function createEngine(data) {
         continue;
       }
       const name = safeAssetName(item.name, taken, schema.generatedFiles.assetsDir);
-      taken.add(foldName(name));
+      taken.add(foldPackName(name));
       if (name !== item.name) notes.cleaned += 1;
       const size = Math.max(0, Math.floor(Number(item.size)) || 0);
-      let data = typeof item.data === 'string' ? base64ToBytes(item.data) : null;
+      let data = typeof item.data === 'string' ? decoded.get(item) ?? null : null;
       if (!data && item.data === undefined && item.size === 0) data = new Uint8Array(0);
       if (!data) notes.reattach.push(name);
       state.assets.push({
@@ -1415,13 +1420,22 @@ function createEngine(data) {
   }
 
   // Whether the parts of saved data have the right shape. Anything else means the data is damaged.
-  function savedShapeIsValid(raw) {
+  // An answer under a question this form does not have is not looked at (it is skipped and counted
+  // later, whatever it holds). The content of the files is decoded here, once, into `decoded`
+  // (file record -> bytes); a content that is not base64 makes the data damaged.
+  function savedShapeIsValid(raw, decoded) {
     const objectOrAbsent = (value) => value === undefined || isPlainObject(value);
     if (!objectOrAbsent(raw.answers) || !objectOrAbsent(raw.respondent)) return false;
     if (raw.assets !== undefined && !Array.isArray(raw.assets)) return false;
     const answers = raw.answers ?? {};
-    if (Object.values(answers).some((record) => !isPlainObject(record))) return false;
-    return (raw.assets ?? []).every((item) => !isPlainObject(item) || item.data === undefined || (typeof item.data === 'string' && base64ToBytes(item.data) !== null));
+    if (Object.entries(answers).some(([id, record]) => byId.has(id) && !isPlainObject(record))) return false;
+    for (const item of raw.assets ?? []) {
+      if (!isPlainObject(item) || item.data === undefined) continue;
+      const bytes = typeof item.data === 'string' ? base64ToBytes(item.data) : null;
+      if (bytes === null) return false;
+      decoded.set(item, bytes);
+    }
+    return true;
   }
 
   // raw: the parsed JSON of a saved or exported form.
@@ -1431,13 +1445,14 @@ function createEngine(data) {
   // long) is cleaned or left out and counted in notes, so the person can be told.
   function restoreState(raw) {
     if (!isPlainObject(raw) || raw.format !== FORM_FORMAT) return { ok: false, key: 'ui.form.err.importFormat' };
-    if (!savedShapeIsValid(raw)) return { ok: false, key: 'ui.form.err.importInvalid' };
+    const decoded = new Map();
+    if (!savedShapeIsValid(raw, decoded)) return { ok: false, key: 'ui.form.err.importInvalid' };
     const notes = newNotes();
     const state = newState({ language: raw.language, depth: raw.depth });
     const person = raw.respondent ?? {};
     state.respondent = { name: cleanTracked(person.name, LIMITS.person, notes), role: cleanTracked(person.role, LIMITS.person, notes) };
     state.recipient = cleanTracked(raw.recipient, LIMITS.recipient, notes);
-    const isStamp = typeof raw.createdAt === 'string' && /^\d{4}-\d{2}-\d{2}T[\d:.]+Z$/.test(raw.createdAt);
+    const isStamp = typeof raw.createdAt === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(raw.createdAt) && isRealStamp(raw.createdAt);
     if (isStamp) state.createdAt = raw.createdAt;
     const known = schema.moduleOrder.includes(raw.currentModule) || raw.currentModule === 'finish';
     state.currentModule = known ? raw.currentModule : schema.moduleOrder[0];
@@ -1446,17 +1461,29 @@ function createEngine(data) {
     for (const question of ordered) {
       if (Object.hasOwn(answers, question.id)) state.answers[question.id] = cleanRecord(question, answers[question.id], notes);
     }
-    restoreAssets(raw.assets ?? [], state, notes);
+    restoreAssets(raw.assets ?? [], state, notes, decoded);
     return { ok: true, state, notes, copy: savedCopyOf(raw) };
+  }
+
+  // A time like 2026-10-22T08:15:30Z that exists (not the 31st of February, not hour 25).
+  function isRealStamp(value) {
+    const time = Date.parse(value);
+    return !Number.isNaN(time) && `${new Date(time).toISOString().slice(0, 19)}Z` === value;
   }
 
   // Which copy in the browser's storage saved data is: { revision, writeId, savedAt }, with 0 and ''
   // for what is missing or not of the right kind.
   function savedCopyOf(raw) {
     if (!isPlainObject(raw)) return { revision: 0, writeId: '', savedAt: '' };
-    const revision = Number.isInteger(raw.revision) && raw.revision >= 0 && raw.revision <= 0x7fffffff ? raw.revision : 0;
+    const revision = Number.isSafeInteger(raw.revision) && raw.revision >= 0 ? raw.revision : 0;
     const writeId = typeof raw.writeId === 'string' && /^[0-9a-f]{1,40}$/.test(raw.writeId) ? raw.writeId : '';
     return { revision, writeId, savedAt: typeof raw.savedAt === 'string' ? raw.savedAt.slice(0, 40) : '' };
+  }
+
+  // The number of the copy that follows `revision`. It starts again at 1 after the largest number a
+  // script can count exactly, so a copy is never refused for having a number that is too big.
+  function nextRevision(revision) {
+    return Number.isSafeInteger(revision) && revision >= 0 && revision < Number.MAX_SAFE_INTEGER ? revision + 1 : 1;
   }
 
   // Files of `from` that `to` lists without content (loaded from the browser's storage, which keeps no
@@ -1519,6 +1546,7 @@ function createEngine(data) {
     exportPlan,
     adoptFiles,
     copyOf: savedCopyOf,
+    nextRevision,
     restoreState,
     parseSavedText,
     hasAnswers,
@@ -1534,18 +1562,17 @@ const EMFC_LIBRARY = {
   IMPORT_MAX_BYTES,
   PACK_HEADROOM_BYTES,
   YIELD_EVERY_BYTES,
-  ZIP_FORBIDDEN_RANGES,
   assetNameProblem,
   cleanBlock,
   cleanField,
   cleanLine,
   cleanName,
   countRemoved,
-  foldName,
+  foldPackName,
   isForbiddenNameCode,
+  nameProblems,
   removeRefused,
   showNameCharacters,
-  zipNameProblem,
   base64Parts,
   bytesToBase64,
   base64ToBytes,
@@ -1554,6 +1581,7 @@ const EMFC_LIBRARY = {
   createZipParts,
   encodeUtf8,
   FormError,
+  ATTACH_EXTRA_HEADROOM_BYTES,
   safeAssetName,
   sha256Hex,
   sha256HexAsync,

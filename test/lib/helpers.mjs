@@ -44,6 +44,7 @@ export const FLAG_IDS = [
   'assets.noRights',
   'assets.rightsUnknown',
   'assets.badName',
+  'assets.notPackable',
   'cross.languagesVsMultilingual',
   'cross.redesignNoSite',
   'cross.assetsClaimedMissing',
@@ -144,6 +145,16 @@ export async function runScript(main, argv, options = {}) {
   const captured = captureIo(options);
   const code = await main(argv, captured.io);
   return { code, out: captured.out(), err: captured.err() };
+}
+
+// CPU time of this process in milliseconds. The timing tests measure work, not the wait for a busy
+// computer, so they use this and not the clock. Their limits are far above what the work takes on
+// its own (about half a second) and far below what a pattern that backtracks would take (minutes),
+// so that a computer that is busy with other work does not make them fail.
+export const WORK_LIMIT_MS = 2500;
+export function cpuNow() {
+  const { user, system } = process.cpuUsage();
+  return (user + system) / 1000;
 }
 
 export function readJson(file) {

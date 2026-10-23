@@ -1,5 +1,6 @@
 // Shared helpers for the command line tests. This file has no tests of its own.
 
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -140,5 +141,34 @@ export function trySymlink(target, linkPath, type) {
     return true;
   } catch {
     return false;
+  }
+}
+
+// Text that deflate shrinks to about a tenth. (A repeated sentence shrinks by more than 200 to 1, and
+// such an entry is stored.) The same seed always gives the same text.
+export function wordSalad(bytes, seed = 1) {
+  const words = ['bageri', 'kage', 'brød', 'kunde', 'side', 'logo', 'farve', 'tekst', 'pris', 'mål', 'tid', 'plan'];
+  let state = seed;
+  const parts = [];
+  let length = 0;
+  while (length < bytes) {
+    state = (state * 48271) % 2147483647;
+    const word = `${words[state % words.length]} `;
+    parts.push(word);
+    length += word.length;
+  }
+  return Buffer.from(parts.join('')).subarray(0, bytes);
+}
+
+// Writes a big file in pieces of 1 MB, so the test never holds the whole file in memory.
+// kind: 'zeros' (shrinks past 200 to 1), 'text' (shrinks to about a tenth) or 'random' (does not shrink).
+export function writeFilled(filePath, megabytes, kind) {
+  const piece = { zeros: () => Buffer.alloc(1024 * 1024), text: () => wordSalad(1024 * 1024), random: () => crypto.randomBytes(1024 * 1024) }[kind]();
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  const fd = fs.openSync(filePath, 'w');
+  try {
+    for (let index = 0; index < megabytes; index += 1) fs.writeSync(fd, piece);
+  } finally {
+    fs.closeSync(fd);
   }
 }

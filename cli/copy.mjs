@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { CliError } from './errors.mjs';
 import { sha256File, sha256Hex } from './hash.mjs';
-import { RECORD_NAME, buildRecord } from './record.mjs';
+import { RECORD_NAME, buildRecord, toSlashes } from './record.mjs';
 
 function compareNames(a, b) {
   return Buffer.compare(Buffer.from(a), Buffer.from(b));
@@ -127,12 +127,21 @@ function copyFiles(tree, destination, created, onFile) {
   return written;
 }
 
-function writeRecord(tree, destination, written, created, onFile) {
+function writeRecord(tree, destination, written, created, ancestors, onFile) {
   const target = path.join(destination, RECORD_NAME);
-  const text = `${JSON.stringify(buildRecord(written, tree.dirs), null, 2)}\n`;
+  const text = `${JSON.stringify(buildRecord(written, tree.dirs, ancestors), null, 2)}\n`;
   fs.writeFileSync(target, text, { flag: 'wx' });
   created.files.push(target);
   onFile({ relative: RECORD_NAME, destinationPath: target, sha256: sha256Hex(text) });
+}
+
+// The folders above the destination that this copy created, as paths from baseDir with forward
+// slashes, joined with the ones an earlier install of the same folder had created (inherited), top first.
+function recordedAncestors(createdBefore, baseDir, inherited) {
+  const fresh = baseDir
+    ? createdBefore.map((folder) => path.relative(baseDir, folder)).filter((relative) => relative !== '' && !relative.startsWith('..')).map(toSlashes)
+    : [];
+  return [...new Set([...inherited, ...fresh])].sort((a, b) => a.split('/').length - b.split('/').length);
 }
 
 // Copies every file of the tree into destination and writes the install record there.
@@ -140,13 +149,16 @@ function writeRecord(tree, destination, written, created, onFile) {
 // a file that is already there is never overwritten. Calls onFile({ relative, destinationPath, sha256 })
 // after each file. When anything fails, only what this call created is removed again;
 // error.leftBehind names a file that could not be removed.
-export function copyTree(tree, destination, onFile = () => {}) {
+// options: { baseDir, inheritedAncestors } - baseDir is the project or home folder; the folders this call
+// creates between it and the destination go into the record, together with the inherited ones.
+export function copyTree(tree, destination, onFile = () => {}, options = {}) {
   const created = { dirs: [], files: [] };
   try {
     makeAncestors(path.dirname(destination), created);
+    const ancestors = recordedAncestors([...created.dirs], options.baseDir, options.inheritedAncestors ?? []);
     makeFolderBelow(destination, created);
     const written = copyFiles(tree, destination, created, onFile);
-    writeRecord(tree, destination, written, created, onFile);
+    writeRecord(tree, destination, written, created, ancestors, onFile);
   } catch (error) {
     const stuck = undoCreated(created);
     const failure =
