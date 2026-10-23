@@ -109,12 +109,12 @@ It removes only the files the installer wrote. They are listed in a small file c
 
 ## Pin a release
 
-By default, `npx` uses the newest code on GitHub. To use a fixed release, add `#` and the version after the repository name, and use the same version for every command:
+By default, `npx` uses the newest code on GitHub. Once the repository has releases, you can use a fixed one: add `#` and the release name after the repository name, and use the same release for every command. Replace `<release>` with a name from the repository's Releases page:
 
 ```sh
-npx "github:cwmunch/EverythingMappedForClients#v1.0.0" install
-npx "github:cwmunch/EverythingMappedForClients#v1.0.0" check
-npx "github:cwmunch/EverythingMappedForClients#v1.0.0" pack
+npx "github:cwmunch/EverythingMappedForClients#<release>" install
+npx "github:cwmunch/EverythingMappedForClients#<release>" check
+npx "github:cwmunch/EverythingMappedForClients#<release>" pack
 ```
 
 The quotes stop some shells from reading `#` as a special character.
@@ -303,12 +303,12 @@ Det fjerner kun de filer, installationsprogrammet har skrevet. De står på en l
 
 ## Brug en bestemt version
 
-Som standard bruger `npx` den nyeste kode på GitHub. Vil du bruge en fast version, så skriv `#` og versionsnummeret efter navnet på repositoriet, og brug den samme version til alle kommandoer:
+Som standard bruger `npx` den nyeste kode på GitHub. Når repositoriet har udgivelser, kan du bruge en fast en: skriv `#` og udgivelsens navn efter navnet på repositoriet, og brug den samme udgivelse til alle kommandoer. Erstat `<release>` med et navn fra repositoriets side med udgivelser (Releases):
 
 ```sh
-npx "github:cwmunch/EverythingMappedForClients#v1.0.0" install
-npx "github:cwmunch/EverythingMappedForClients#v1.0.0" check
-npx "github:cwmunch/EverythingMappedForClients#v1.0.0" pack
+npx "github:cwmunch/EverythingMappedForClients#<release>" install
+npx "github:cwmunch/EverythingMappedForClients#<release>" check
+npx "github:cwmunch/EverythingMappedForClients#<release>" pack
 ```
 
 Anførselstegnene forhindrer, at nogle shells læser `#` som et specialtegn.
